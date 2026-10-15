@@ -9951,7 +9951,9 @@ function _notificationOptions(body,options={}){
     ? `${location.origin}${_appRootPath()}${_appRootPath().includes('?')?'&':'?'}panel=${encodeURIComponent(panel)}`
     : `${location.origin}${_appRootPath()}`;
   const url=sessionless?rootWithPanelIntent:(sid?`${location.origin}${_sessionUrlForSid(sid)}`:location.href);
-  return {body:body||'',tag:sessionless?'hermes-webui-sessionless':(sid?`hermes-${sid}`:'hermes-webui'),renotify:true,icon:'static/favicon-192.png',badge:'static/favicon-32.png',data:{url}};
+  // Pack notification icons (boot.js _applyPackIcons sets the global while a
+  // pack declaring favicon192/favicon32 is active; absent otherwise).
+  return {body:body||'',tag:sessionless?'hermes-webui-sessionless':(sid?`hermes-${sid}`:'hermes-webui'),renotify:true,icon:(window.__HERMES_SKIN_ICONS__&&window.__HERMES_SKIN_ICONS__.icon192)||'static/favicon-192.png',badge:(window.__HERMES_SKIN_ICONS__&&window.__HERMES_SKIN_ICONS__.icon32)||'static/favicon-32.png',data:{url}};
 }
 function _showPwaNotification(title,body,options={}){
   const botName=assistantDisplayName();

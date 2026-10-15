@@ -41,9 +41,11 @@ function extract(source, name) {
 }
 
 // Stub the globals `_notificationOptions` touches so the extracted function
-// runs standalone: S (session state), location, and _sessionUrlForSid.
+// runs standalone: S (session state), location, _sessionUrlForSid, and the
+// window carrying the skin-pack notification icons (absent → stock fallbacks).
 let S = { session: { session_id: 'sess-6673' } };
 global.S = S;
+global.window = {};
 global.location = { origin: 'http://localhost:8080', href: 'http://localhost:8080/' };
 global._sessionUrlForSid = (sid) => '/#/s/' + sid;
 global._appRootPath = () => '/';

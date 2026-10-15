@@ -17,7 +17,15 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hermes">
 <link rel="apple-touch-icon" sizes="512x512" href="static/apple-touch-icon.png">
-<script>(function(){try{var _hadAppearance=localStorage.getItem('hermes-theme')!==null||localStorage.getItem('hermes-skin')!==null;var themes={light:1,dark:1,system:1},skins={codex:1,terracotta:1,default:1,ares:1,mono:1,graphite:1,github:1,slate:1,poseidon:1,sisyphus:1,charizard:1,sienna:1,catppuccin:1,hepburn:1,nous:1,'geist-contrast':1,neon:1,'neon-soft':1,'neon-paint':1,zeus:1,'verdigris':1},legacy={slate:['dark','slate'],solarized:['dark','poseidon'],monokai:['dark','sisyphus'],nord:['dark','slate'],oled:['dark','default']},t=(localStorage.getItem('hermes-theme')||'dark').toLowerCase(),s=(localStorage.getItem('hermes-skin')||'').toLowerCase(),m=legacy[t],theme=m?m[0]:(themes[t]?t:'dark');var pendingExt=s&&s!=='default'&&!skins[s]&&!legacy[s];var skin=skins[s]?s:(pendingExt?s:(m?m[1]:'default'));if(_hadAppearance){localStorage.setItem('hermes-theme',theme);localStorage.setItem('hermes-skin',skin);}if(theme==='system')theme=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';if(theme==='dark')document.documentElement.classList.add('dark');if(skin!=='default')document.documentElement.dataset.skin=skin;}catch(e){document.documentElement.classList.add('dark');}})()</script>
+<!-- Keep the skin-pack tail of this pre-paint script in sync with
+     _applySkinEntry/_applySkinPack/_applyPackTweakValues in boot.js:
+     'hermes-skin-pack' holds the selected entry key; 'hermes-skin-applied'
+     holds the LAST APPLIED dataset.skin value ('' | '<key>' | 'pack:<key>')
+     and overrides the legacy map below whenever the key exists (even empty);
+     'hermes-skin-pack-palette' caches the FINAL per-scheme var map
+     {light:{'--token':value},dark:{...}} (palette + resolved tweaks, ≤4KB),
+     replayed here as inline custom properties for the current scheme class. -->
+<script>(function(){try{var _hadAppearance=localStorage.getItem('hermes-theme')!==null||localStorage.getItem('hermes-skin')!==null;var themes={light:1,dark:1,system:1},skins={codex:1,terracotta:1,default:1,ares:1,mono:1,graphite:1,github:1,slate:1,poseidon:1,sisyphus:1,charizard:1,sienna:1,catppuccin:1,hepburn:1,nous:1,'geist-contrast':1,neon:1,'neon-soft':1,'neon-paint':1,zeus:1,'verdigris':1},legacy={slate:['dark','slate'],solarized:['dark','poseidon'],monokai:['dark','sisyphus'],nord:['dark','slate'],oled:['dark','default']},t=(localStorage.getItem('hermes-theme')||'dark').toLowerCase(),s=(localStorage.getItem('hermes-skin')||'').toLowerCase(),m=legacy[t],theme=m?m[0]:(themes[t]?t:'dark');var pendingExt=s&&s!=='default'&&!skins[s]&&!legacy[s];var skin=skins[s]?s:(pendingExt?s:(m?m[1]:'default'));if(_hadAppearance){localStorage.setItem('hermes-theme',theme);localStorage.setItem('hermes-skin',skin);}if(theme==='system')theme=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';if(theme==='dark')document.documentElement.classList.add('dark');if(skin!=='default')document.documentElement.dataset.skin=skin;var pk=(localStorage.getItem('hermes-skin-pack')||'').toLowerCase();if(pk)document.documentElement.dataset.skin='pack:'+pk;var apk=localStorage.getItem('hermes-skin-applied');if(apk!==null){if(apk)document.documentElement.dataset.skin=apk;else delete document.documentElement.dataset.skin;}if(pk){try{var pp=localStorage.getItem('hermes-skin-pack-palette');if(pp){var pm=JSON.parse(pp),pv=(pm&&typeof pm==='object')?(document.documentElement.classList.contains('dark')?pm.dark:pm.light):null;if(pv&&typeof pv==='object')for(var ptok in pv)document.documentElement.style.setProperty(ptok,String(pv[ptok]));}}catch(_){}}}catch(e){document.documentElement.classList.add('dark');}})()</script>
 <script>(function(){try{var fs=localStorage.getItem('hermes-font-size');if(fs&&fs!=='default')document.documentElement.dataset.fontSize=fs;}catch(e){}})()</script>
 <!-- theme-color: surfaces the active app chrome color to native status bars (Safari status bar, PWA, native WKWebView wrappers). Updated dynamically by boot.js when theme/skin changes. The light/dark default values match style.css :root --sidebar / :root.dark --sidebar. -->
 <meta name="theme-color" content="#FAF7F0" media="(prefers-color-scheme: light)">
@@ -1006,6 +1014,12 @@
               <div id="skinPickerGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:4px">
               </div>
               <input type="hidden" id="settingsSkin" value="default">
+              <!-- Skin packs (W5): hidden input mirrors the server `skin_pack`
+                   setting for the appearance autosave; W6 fills #skinPackTweaks,
+                   W7 fills #skinPackScripts. -->
+              <input type="hidden" id="settingsSkinPack" value="">
+              <div id="skinPackTweaks"></div>
+              <div id="skinPackScripts"></div>
             </div>
                         <div class="settings-field">
               <label data-i18n="settings_label_font_size">Font size</label>
