@@ -3328,6 +3328,14 @@ function _findSkinEntry(key){
 
 function _activeSkinScheme(){
   const key=(document.documentElement.dataset.skin||'default').toLowerCase();
+  // Skin packs: scheme comes from the fetched pack dict, not _SKINS. A pack
+  // key whose list hasn't resolved yet contributes no override (base theme
+  // decides, same as the index.html pre-paint).
+  if(key.startsWith('pack:')){
+    const pack=_findSkinPack(key.slice(5));
+    const packScheme=pack&&pack.scheme;
+    return packScheme==='light'||packScheme==='dark'?packScheme:'';
+  }
   const skin=_findSkinEntry(key);
   const scheme=skin&&skin._extScheme;
   return scheme==='light'||scheme==='dark'?scheme:'';
@@ -3381,33 +3389,124 @@ function _applySkin(name){
 }
 
 function _pickTheme(name){
-  const currentSkin=localStorage.getItem('hermes-skin');
-  const appearance=_normalizeAppearance(name,currentSkin);
+  const appearance=_normalizeAppearance(name,'default');
   localStorage.setItem('hermes-theme',appearance.theme);
-  localStorage.setItem('hermes-skin',appearance.skin);
   _applyTheme(appearance.theme);
-  _applySkin(appearance.skin);
+  // Bug fix (skin unification, batch 3): switching the theme must never move
+  // the skin axis. Re-apply the ACTIVE entry — the selected pack when one is
+  // set, else a dormant extension-registered skin on the legacy axis, else
+  // Default — instead of stomping data-skin with the last-used builtin skin
+  // (which also killed an active pack). The entry apply owns the legacy
+  // hermes-skin mirror and the #settingsSkin hidden input.
+  const activePackKey=(localStorage.getItem('hermes-skin-pack')||'').trim().toLowerCase();
+  const legacySkin=(localStorage.getItem('hermes-skin')||'').trim().toLowerCase();
+  _applySkinEntry(activePackKey||legacySkin);
   _syncThemePicker(appearance.theme);
-  _syncSkinPicker(appearance.skin);
   const hidden=$('settingsTheme');
   if(hidden) hidden.value=appearance.theme;
-  const skinHidden=$('settingsSkin');
-  if(skinHidden) skinHidden.value=appearance.skin;
   if(typeof _scheduleAppearanceAutosave==='function') _scheduleAppearanceAutosave();
 }
 
-function _pickSkin(name){
-  const appearance=_normalizeAppearance(localStorage.getItem('hermes-theme'),name);
-  localStorage.setItem('hermes-theme',appearance.theme);
-  localStorage.setItem('hermes-skin',appearance.skin);
-  _applyTheme(appearance.theme);
-  _applySkin(appearance.skin);
-  _syncThemePicker(appearance.theme);
-  _syncSkinPicker(appearance.skin);
+// ── Unified skin axis (batch 3) ─────────────────────────────────────────────
+// ONE axis selects the look. Entry keys:
+//   ''          Default (no data-skin attribute)
+//   '<key>'     a builtin skin shipped as a css-key pack — the CSS already
+//               lives in style.css under :root[data-skin="<key>"]
+//   'pack:<key>' a managed pack (aurora, user packs): palette style +
+//               extraCss + thinking + icons + tweaks, injected by
+//               _applySkinPack
+// Extension-registered skins (registerHermesSkin) keep their bare-key apply
+// on the legacy axis — they are runtime contributions, not packs.
+// localStorage contract:
+//   hermes-skin-pack    the SELECTED entry key ('' | css-key | managed key)
+//   hermes-skin-applied the LAST APPLIED dataset.skin value ('' | '<key>' |
+//                       'pack:<key>') — the index.html pre-paint override
+//   hermes-skin         the legacy mirror (css-key key, else 'default'),
+//                       kept for legacy consumers (/theme legacy paths, the
+//                       old pre-paint skin map)
+
+function _writeAppliedSkinKey(value){
+  try{localStorage.setItem('hermes-skin-applied',String(value||''));}catch(_){}
+}
+
+function _setLegacySkinAxis(skinKey){
+  // The entry apply owns the legacy axis, so the appearance payload's `skin`
+  // field is consistent with the selected entry by construction.
+  const key=String(skinKey||'default').toLowerCase();
+  try{localStorage.setItem('hermes-skin',key);}catch(_){}
   const hidden=$('settingsSkin');
-  if(hidden) hidden.value=appearance.skin;
-  const themeHidden=$('settingsTheme');
-  if(themeHidden) themeHidden.value=appearance.theme;
+  if(hidden) hidden.value=key;
+}
+
+function _applySkinEntry(key){
+  const rawKey=String(key||'').trim().toLowerCase();
+  const pack=rawKey?_findSkinPack(rawKey):null;
+  if(pack&&pack.applyMode!=='css-key'){
+    // Managed pack (user packs, aurora): the classic _applySkinPack behavior
+    // — pack: prefix + palette style + extraCss + thinking + icons, then
+    // tweak re-apply from the shared runtime state.
+    const packKey=String(pack.key).toLowerCase();
+    _setLegacySkinAxis('default');
+    _applySkinPack(packKey);
+    _applyPackTweakValues(packKey,(window._skinTweaksState&&window._skinTweaksState[pack.key])||{});
+    _writeAppliedSkinKey(_packSkinKey(pack));
+    return true;
+  }
+  // Default entry, a builtin css-key pack, or an extension-registered skin:
+  // dataset.skin gets the bare key and every managed-pack element is
+  // stripped — the CSS for these keys already exists (style.css for builtin
+  // skins, the extension stylesheet for registered skins). Unknown keys
+  // resolve to the default look.
+  let bareKey='default';
+  if(pack) bareKey=String(pack.key).toLowerCase();
+  else if(rawKey&&_VALID_SKINS.has(rawKey)) bareKey=rawKey;
+  _setLegacySkinAxis(bareKey);
+  // _removeSkinPack strips all managed chrome (palette/tweaks/extraCss/
+  // thinking/icons/logos); its trailing builtin re-apply reads the
+  // just-synced legacy key, so dataset.skin ends up exactly bareKey
+  // ('default' deletes the attribute).
+  _removeSkinPack();
+  _writeAppliedSkinKey(bareKey==='default'?'':bareKey);
+  return true;
+}
+
+function _pickSkinEntry(key){
+  // THE unified picker click handler. key '' = the Default tile.
+  const rawKey=String(key||'').trim().toLowerCase();
+  const isPackKey=!!rawKey&&!!_findSkinPack(rawKey);
+  // Extension-registered skins are legacy-axis selections, not packs —
+  // clicking their tile clears the pack axis and applies the bare key.
+  const isExtSkin=!!rawKey&&rawKey!=='default'&&!isPackKey&&_VALID_SKINS.has(rawKey);
+  const packKey=isPackKey?rawKey:'';
+  try{localStorage.setItem('hermes-skin-pack',packKey);}catch(_){}
+  _applySkinEntry(isExtSkin?rawKey:packKey);
+  const pack=packKey?_findSkinPack(packKey):null;
+  let marker='default';
+  if(isExtSkin) marker=rawKey;
+  else if(pack) marker=pack.applyMode==='css-key'?String(pack.key).toLowerCase():_packSkinKey(pack);
+  _syncSkinPicker(marker);
+  const packHidden=$('settingsSkinPack');
+  if(packHidden) packHidden.value=packKey;
+  if(typeof _scheduleAppearanceAutosave==='function') _scheduleAppearanceAutosave();
+  // W6: re-render the tweak panel + script chip for the newly active entry.
+  if(typeof _syncSkinPackSettingsUi==='function') _syncSkinPackSettingsUi();
+  // W7: pack scripts load only behind explicit consent — ask on first
+  // selection. The pack itself is already applied above; scripts are the
+  // only gated part, and boot-time loads for already-consented packs stay
+  // silent (the dialog is a picker action, never part of boot).
+  if(pack&&Array.isArray(pack.scripts)&&pack.scripts.length
+    &&(!window._skinScriptConsents||window._skinScriptConsents[pack.key]!==true)
+    &&typeof _requestSkinPackScriptConsent==='function'){
+    _requestSkinPackScriptConsent(pack);
+  }
+}
+
+function _pickSkin(name){
+  // Thin compat shim (batch 3): a direct skin pick routes through the
+  // unified entry picker. Kept for any missed call sites; the #1003
+  // autosave contract stays literal here (the debounced scheduler makes
+  // the second schedule a no-op).
+  _pickSkinEntry(String(name||'').trim().toLowerCase());
   if(typeof _scheduleAppearanceAutosave==='function') _scheduleAppearanceAutosave();
 }
 
@@ -3452,38 +3551,643 @@ function _syncFontSizePicker(active){
   });
 }
 
+// ── Skin packs (skin-pack feature, W5) ─────────────────────────────────────
+// A pack is a server-discovered theme bundle (api/skinpacks.py) fetched from
+// GET /api/skins. Applying one layers THREE chrome pieces on top of the
+// builtin skin system, in cascade order:
+//   1. #hermesPackPalette <style> — :root[data-skin="pack:<key>"] (light) and
+//      :root.dark[data-skin="pack:<key>"] (dark) blocks built from the pack
+//      palette (cross-scheme fallback per token)
+//   2. #hermesPackTweaks <style> — resolved tweak vars, kept AFTER the
+//      palette element in the DOM so tweaks win the cascade; selector is
+//      scoped to the pack's data-skin value so stale content is inert
+//   3. #hermesPackExtraCss <link> — the pack's own stylesheet
+// plus documentElement dataset.skin="pack:<key>" (drives _activeSkinScheme so
+// a pack `scheme:"light"/"dark"` forces the effective .dark class).
+//
+// The index.html pre-paint script replays the last applied palette from
+// localStorage['hermes-skin-pack-palette'] as inline custom properties on
+// <html>; because inline style beats every stylesheet rule, EVERY pack state
+// transition must clear exactly those inline keys first —
+// _clearPackPrepaintInlineVars() reads the cache BEFORE it is rewritten.
+const _PACK_PALETTE_STYLE_ID='hermesPackPalette';
+const _PACK_TWEAKS_STYLE_ID='hermesPackTweaks';
+const _PACK_EXTRA_CSS_ID='hermesPackExtraCss';
+const _PACK_PREPAINT_CACHE_KEY='hermes-skin-pack-palette';
+const _PACK_PREPAINT_CACHE_MAX=4096;
+const _PACK_TWEAK_CLASS_RE=/^pack-[a-z0-9-]{1,32}$/;
+const _PACK_TOKEN_RE=/^--[a-z0-9-]{1,64}$/i;
+// Batch 2 (thinking animation + icon/logo swap): the thinking indicator lives
+// in a dedicated element (a <style> for gif mode, a <link> for css mode) that
+// shares this one id; the brand-mark swap targets and the originals cache are
+// below with the batch-2 helpers.
+const _PACK_THINKING_ID='hermesPackThinking';
+// Manifest asset paths that get interpolated into CSS text (the thinking GIF
+// url()): plain path characters only, so a hostile path can never compose a
+// second rule or break out of the quoted url(). The server-side manifest
+// validation is the trust boundary; this is the composition backstop.
+const _PACK_CSS_URL_PATH_RE=/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}(?:\/[A-Za-z0-9][A-Za-z0-9 ._-]{0,127})*$/;
+// Batch 4 (image tweaks): stored values are server-assigned upload filenames
+// (sha256 hex + extension, POST /api/skins/<key>/upload → {"file": ...}). The
+// ONLY shape allowed into the composed url() in _applyPackTweakValues;
+// anything else omits the tweak token entirely. panels.js carries its own
+// copy (_PACK_TWEAK_UPLOAD_FILE_RE) for the preview gating — keep in sync.
+const _PACK_UPLOAD_FILE_RE=/^[a-f0-9]{64}\.(png|jpg|jpeg|gif|webp)$/;
+let _SKIN_PACKS=[];
+window._SKIN_PACKS=_SKIN_PACKS;   // mutated in place so the reference stays live
+let _SKIN_PACKS_FETCH_ATTEMPTED=false;
+let _SKIN_PACKS_FETCHED=false;
+// Shared runtime state for the pack settings — the ONE source of truth that
+// the boot reconcile, the panels.js tweak panel (W6) and the script-consent
+// flow (W7) all read/write:
+//   window._skinTweaksState     {packKey:{tweakId:value}}  — server `skin_tweaks`
+//   window._skinScriptConsents  {packKey:boolean}          — server `skin_script_consents`
+// Mirrored from the settings payload (boot reconcile + settings hydration),
+// sent back in full by the appearance autosave, and re-synced from the
+// server-normalized autosave response (panels.js).
+window._skinTweaksState={};
+window._skinScriptConsents={};
+const _PACK_TWEAK_CLASSES=new Set();
+const _PACK_LOADED_SCRIPT_URLS=new Set();
+
+function _findSkinPack(key){
+  const normalized=String(key||'').trim().toLowerCase();
+  if(!normalized) return null;
+  return (_SKIN_PACKS||[]).find(p=>p&&typeof p.key==='string'&&p.key.toLowerCase()===normalized)||null;
+}
+
+function _packSkinKey(pack){
+  // Slug-guard the key before it reaches a CSS attribute selector.
+  return 'pack:'+String(pack.key||'').toLowerCase().replace(/[^a-z0-9-]/g,'');
+}
+
+function _packAssetUrl(pack,rel){
+  const clean=String(rel||'').replace(/^\/+/,'');
+  return String((pack&&pack.assetsBase)||'')+clean;
+}
+
+function _isSafePackCssUrlPath(rel){
+  // Guard for manifest paths that end up inside CSS text (the thinking GIF
+  // url()). Server-side manifest validation is the trust boundary; this
+  // backstop keeps anything that could compose a second rule from reaching
+  // textContent at all.
+  if(typeof rel!=='string'||!rel||rel.length>256) return false;
+  return _PACK_CSS_URL_PATH_RE.test(rel);
+}
+
+function _sanitizePackCssValue(raw){
+  // Server-side validation (api/skinpacks.py _SAFE_VALUE_RE) is the trust
+  // boundary; this backstop only guards the CSS-text composition below.
+  if(typeof raw!=='string'&&typeof raw!=='number') return null;
+  const value=String(raw).trim();
+  if(!value||value.length>64) return null;
+  if(/[;{}<>\\]/.test(value)||value.toLowerCase().includes('url(')) return null;
+  return value;
+}
+
+function _packPaletteVarMap(pack){
+  // Per-scheme token→value map with `--` prefixes; a token missing from one
+  // scheme falls back to the other scheme's value.
+  const palettes=(pack&&pack.palette&&typeof pack.palette==='object')?pack.palette:{};
+  const light=(palettes.light&&typeof palettes.light==='object')?palettes.light:{};
+  const dark=(palettes.dark&&typeof palettes.dark==='object')?palettes.dark:{};
+  const out={light:{},dark:{}};
+  for(const scheme of ['light','dark']){
+    const own=scheme==='light'?light:dark;
+    const other=scheme==='light'?dark:light;
+    for(const rawToken of new Set(Object.keys(own).concat(Object.keys(other)))){
+      const token=String(rawToken).startsWith('--')?String(rawToken):'--'+String(rawToken);
+      if(!_PACK_TOKEN_RE.test(token)) continue;
+      const source=Object.prototype.hasOwnProperty.call(own,rawToken)?own:other;
+      const value=_sanitizePackCssValue(source[rawToken]);
+      if(value===null) continue;
+      out[scheme][token]=value;
+    }
+  }
+  return out;
+}
+
+function _clearPackPrepaintInlineVars(){
+  try{
+    const raw=localStorage.getItem(_PACK_PREPAINT_CACHE_KEY);
+    if(!raw) return;
+    const map=JSON.parse(raw);
+    const style=document.documentElement.style;
+    for(const scheme of ['light','dark']){
+      const vars=map&&map[scheme];
+      if(!vars||typeof vars!=='object') continue;
+      for(const token of Object.keys(vars)) style.removeProperty(token);
+    }
+  }catch(_){}
+}
+
+function _writePackPrepaintCache(pack,tweakVars){
+  // Cache = FINAL per-scheme var map (palette + resolved tweaks) that the
+  // index.html pre-paint replays. Over 4KB → dropped (removeItem) so a
+  // stale cache from another pack can never mis-paint the next load.
+  try{
+    const vars=_packPaletteVarMap(pack);
+    const merged={};
+    for(const scheme of ['light','dark']) merged[scheme]=Object.assign({},vars[scheme],tweakVars||{});
+    const json=JSON.stringify(merged);
+    if(json.length>_PACK_PREPAINT_CACHE_MAX){ localStorage.removeItem(_PACK_PREPAINT_CACHE_KEY); return; }
+    localStorage.setItem(_PACK_PREPAINT_CACHE_KEY,json);
+  }catch(_){}
+}
+
+async function _fetchSkinPacks(){
+  if(_SKIN_PACKS_FETCHED) return _SKIN_PACKS;
+  _SKIN_PACKS_FETCH_ATTEMPTED=true;
+  try{
+    const data=await api('/api/skins');
+    const packs=(data&&Array.isArray(data.packs))?data.packs:[];
+    _SKIN_PACKS.length=0;
+    for(const pack of packs){
+      if(pack&&typeof pack==='object'&&typeof pack.key==='string'&&pack.key) _SKIN_PACKS.push(pack);
+    }
+    _SKIN_PACKS_FETCHED=true;
+  }catch(e){
+    // A failed fetch must read as "unknown", never "no packs" — callers
+    // distinguish a missing pack (fallback) from a failed list (keep state).
+    _SKIN_PACKS_FETCH_ATTEMPTED=false;
+    throw e;
+  }
+  return _SKIN_PACKS;
+}
+
+// ── Skin-pack batch 2: thinking indicator, notification icons, logo swap ───
+// Manifest fields (server-validated; see api/skinpacks.py):
+//   thinking: {mode:"gif"|"css"|"none", gif:<path>, css:<path>, size:8..128}
+//   icons:    {favicon, favicon32, favicon192, favicon512, appleTouch,
+//              faviconIco, logoSvg} — all optional pack-relative paths.
+// The favicon-family surfaces (index.html <link> rewrites, manifest.json icon
+// replacement, /favicon.ico) are server-owned; the client consumes only the
+// notification pair (favicon192/favicon32) and the in-app logo (logoSvg).
+// Every helper also removes/restores stock chrome when the pack declares
+// nothing, so pack→pack transitions through _applySkinPack stay clean.
+const _PACK_LOGO_SELECTORS=['.app-titlebar-icon','.empty-logo'];
+const _PACK_LOGO_ORIGINALS=new WeakMap();
+
+function _applyPackThinking(pack){
+  const thinking=(pack&&pack.thinking&&typeof pack.thinking==='object')?pack.thinking:null;
+  const mode=thinking?String(thinking.mode||'').toLowerCase():'';
+  const skinKey=_packSkinKey(pack);
+  const existing=document.getElementById(_PACK_THINKING_ID);
+  if(mode==='css'&&_isSafePackCssUrlPath(thinking.css)){
+    // Pack CSS is self-scoped to :root[data-skin="pack:<key>"], so a plain
+    // stylesheet link is enough — same delivery as extraCss.
+    const href=_packAssetUrl(pack,thinking.css);
+    let link=(existing&&existing.tagName==='LINK')?existing:null;
+    if(existing&&existing!==link) existing.remove();
+    if(!link){
+      link=document.createElement('link');
+      link.id=_PACK_THINKING_ID;
+      link.rel='stylesheet';
+      document.head.appendChild(link);
+    }
+    if(link.getAttribute('href')!==href) link.setAttribute('href',href);
+    return;
+  }
+  if(mode==='gif'&&_isSafePackCssUrlPath(thinking.gif)){
+    // Pure CSS overlay on the untouched #thinkingRow .thinking DOM: hide the
+    // three pending dots and paint the GIF as the row background. The compact
+    // worklog "Thinking" text label (.agent-activity-thinking surfaces) is a
+    // separate surface and is not covered by this rule.
+    const href=_packAssetUrl(pack,thinking.gif);
+    let size=Number(thinking.size);
+    if(!isFinite(size)) size=28;
+    size=Math.min(128,Math.max(8,Math.round(size)));
+    let styleEl=(existing&&existing.tagName==='STYLE')?existing:null;
+    if(existing&&existing!==styleEl) existing.remove();
+    if(!styleEl){
+      styleEl=document.createElement('style');
+      styleEl.id=_PACK_THINKING_ID;
+      document.head.appendChild(styleEl);
+    }
+    styleEl.textContent=
+      `[data-skin="${skinKey}"] #thinkingRow .thinking .dot{display:none}\n`+
+      `[data-skin="${skinKey}"] #thinkingRow .thinking{background:url("${href}") center / contain no-repeat;min-width:${size}px;min-height:${size}px;}`;
+    return;
+  }
+  // mode "none", a missing asset, or a path that failed the guard: the stock
+  // pending dots stay, and any previous pack's element goes away.
+  if(existing) existing.remove();
+}
+
+function _applyPackIcons(pack){
+  const icons=(pack&&pack.icons&&typeof pack.icons==='object')?pack.icons:null;
+  const out={};
+  if(icons&&typeof icons.favicon192==='string'&&icons.favicon192){
+    out.icon192=_packAssetUrl(pack,icons.favicon192);
+  }
+  if(icons&&typeof icons.favicon32==='string'&&icons.favicon32){
+    out.icon32=_packAssetUrl(pack,icons.favicon32);
+  }
+  if(out.icon192||out.icon32) window.__HERMES_SKIN_ICONS__=out;
+  else delete window.__HERMES_SKIN_ICONS__;
+}
+
+function _applyPackLogo(pack){
+  const icons=(pack&&pack.icons&&typeof pack.icons==='object')?pack.icons:null;
+  const logoRel=(icons&&typeof icons.logoSvg==='string')?icons.logoSvg:'';
+  if(!logoRel){ _restorePackLogos(); return; }
+  const src=_packAssetUrl(pack,logoRel);
+  for(const selector of _PACK_LOGO_SELECTORS){
+    const el=document.querySelector(selector);
+    if(!el) continue;
+    // Cache the inline-SVG original exactly once — a repeated apply (or a
+    // switch to another logo-declaring pack) must never cache the swapped
+    // <img> markup as the "original".
+    if(!_PACK_LOGO_ORIGINALS.has(el)) _PACK_LOGO_ORIGINALS.set(el,el.innerHTML);
+    const img=el.querySelector('img.skin-logo-img');
+    if(img){
+      if(img.getAttribute('src')!==src) img.setAttribute('src',src);
+      continue;
+    }
+    el.innerHTML='';
+    const swapped=document.createElement('img');
+    swapped.alt='';
+    swapped.className='skin-logo-img';
+    swapped.setAttribute('src',src);
+    el.appendChild(swapped);
+  }
+}
+
+function _restorePackLogos(){
+  for(const selector of _PACK_LOGO_SELECTORS){
+    const el=document.querySelector(selector);
+    if(!el||!_PACK_LOGO_ORIGINALS.has(el)) continue;
+    el.innerHTML=_PACK_LOGO_ORIGINALS.get(el);
+    _PACK_LOGO_ORIGINALS.delete(el);
+  }
+}
+
+function _applySkinPack(key){
+  const pack=_findSkinPack(key);
+  if(!pack) return false;
+  const skinKey=_packSkinKey(pack);
+  if(skinKey==='pack:') return false;
+  _clearPackPrepaintInlineVars();
+  // Drop the previous pack's tweak chrome: class toggles are global (not
+  // scoped by data-skin), and the tweaks style is refilled by
+  // _applyPackTweakValues() right after every apply path.
+  for(const cls of _PACK_TWEAK_CLASSES) document.documentElement.classList.remove(cls);
+  _PACK_TWEAK_CLASSES.clear();
+  const staleTweaks=document.getElementById(_PACK_TWEAKS_STYLE_ID);
+  if(staleTweaks) staleTweaks.textContent='';
+  const vars=_packPaletteVarMap(pack);
+  const lightDecls=Object.keys(vars.light).map(tok=>`${tok}:${vars.light[tok]}`).join(';');
+  const darkDecls=Object.keys(vars.dark).map(tok=>`${tok}:${vars.dark[tok]}`).join(';');
+  let styleEl=document.getElementById(_PACK_PALETTE_STYLE_ID);
+  if(!styleEl){
+    styleEl=document.createElement('style');
+    styleEl.id=_PACK_PALETTE_STYLE_ID;
+    const tweakStyle=document.getElementById(_PACK_TWEAKS_STYLE_ID);
+    if(tweakStyle) document.head.insertBefore(styleEl,tweakStyle);
+    else document.head.appendChild(styleEl);
+  }
+  styleEl.textContent=`:root[data-skin="${skinKey}"]{${lightDecls}}\n:root.dark[data-skin="${skinKey}"]{${darkDecls}}`;
+  let link=document.getElementById(_PACK_EXTRA_CSS_ID);
+  if(pack.extraCss){
+    const href=_packAssetUrl(pack,pack.extraCss);
+    if(!link){
+      link=document.createElement('link');
+      link.id=_PACK_EXTRA_CSS_ID;
+      link.rel='stylesheet';
+      document.head.appendChild(link);
+    }
+    if(link.getAttribute('href')!==href) link.setAttribute('href',href);
+  }else if(link){
+    link.remove();
+  }
+  // Batch 2 surfaces (thinking, notification icons, logo) ride every apply
+  // path: picker, boot reconcile, /theme — they live here, not in callers.
+  _applyPackThinking(pack);
+  _applyPackIcons(pack);
+  _applyPackLogo(pack);
+  document.documentElement.dataset.skin=skinKey;
+  _setResolvedTheme(_resolvedThemeBaseDark);
+  _writePackPrepaintCache(pack,null);
+  return true;
+}
+
+function _removeSkinPack(){
+  const paletteStyle=document.getElementById(_PACK_PALETTE_STYLE_ID);
+  if(paletteStyle) paletteStyle.remove();
+  const link=document.getElementById(_PACK_EXTRA_CSS_ID);
+  if(link) link.remove();
+  const tweakStyle=document.getElementById(_PACK_TWEAKS_STYLE_ID);
+  if(tweakStyle) tweakStyle.remove();
+  // Batch 2: the thinking indicator element (style or link), the
+  // notification-icon global, and the swapped brand marks.
+  const thinkingEl=document.getElementById(_PACK_THINKING_ID);
+  if(thinkingEl) thinkingEl.remove();
+  _applyPackIcons(null);
+  _restorePackLogos();
+  _clearPackPrepaintInlineVars();
+  for(const cls of _PACK_TWEAK_CLASSES) document.documentElement.classList.remove(cls);
+  _PACK_TWEAK_CLASSES.clear();
+  try{localStorage.removeItem(_PACK_PREPAINT_CACHE_KEY);}catch(_){}
+  // 'hermes-skin' stays the dormant builtin choice while a pack is active.
+  _applySkin(localStorage.getItem('hermes-skin')||'default');
+}
+
+function _applyPackTweakValues(key,values){
+  const pack=_findSkinPack(key);
+  if(!pack) return;
+  const skinKey=_packSkinKey(pack);
+  const tweaks=(pack&&Array.isArray(pack.tweaks))?pack.tweaks:[];
+  const hasValue=values&&typeof values==='object';
+  const tweakVars={};
+  for(const tweak of tweaks){
+    if(!tweak||typeof tweak!=='object'||!tweak.id) continue;
+    const value=hasValue&&Object.prototype.hasOwnProperty.call(values,tweak.id)
+      ?values[tweak.id]
+      :tweak.default;
+    const apply=(tweak.apply&&typeof tweak.apply==='object')?tweak.apply:null;
+    if(!apply) continue;
+    if(apply.class){
+      const cls=String(apply.class);
+      if(_PACK_TWEAK_CLASS_RE.test(cls)){
+        document.documentElement.classList.toggle(cls,!!value);
+        _PACK_TWEAK_CLASSES.add(cls);
+      }
+      continue;
+    }
+    if(tweak.type==='image'){
+      // Batch 4: the stored value is a server-assigned upload filename. This
+      // is the ONLY place a url() value enters a tweak var: the filename is
+      // regex-validated and the prefix is fixed, so the URL is fully
+      // server-shaped and bypasses _sanitizePackCssValue's url() rejection
+      // BY CONSTRUCTION — never interpolate anything else here. No value (or
+      // a regex miss) omits the token entirely; theme.css consumes it via
+      // var(--token, none). The same-origin URL passes CSP img-src 'self',
+      // and an inline-style url() var is valid CSS, so the value flows into
+      // _writePackPrepaintCache like any other.
+      if(!apply.var) continue;
+      const imgToken=String(apply.var).startsWith('--')?String(apply.var):'--'+String(apply.var);
+      if(!_PACK_TOKEN_RE.test(imgToken)) continue;
+      const fileName=String(value==null?'':value);
+      if(_PACK_UPLOAD_FILE_RE.test(fileName)){
+        tweakVars[imgToken]=`url('/api/skins/${encodeURIComponent(pack.key)}/uploads/${fileName}')`;
+      }
+      continue;
+    }
+    if(!apply.var) continue;
+    const token=String(apply.var).startsWith('--')?String(apply.var):'--'+String(apply.var);
+    if(!_PACK_TOKEN_RE.test(token)) continue;
+    const composed=typeof apply.template==='string'
+      ?apply.template.split('{value}').join(String(value))
+      :String(value);
+    const safe=_sanitizePackCssValue(composed);
+    if(safe===null) continue;
+    tweakVars[token]=safe;
+  }
+  _clearPackPrepaintInlineVars();
+  let tweakStyle=document.getElementById(_PACK_TWEAKS_STYLE_ID);
+  if(!tweakStyle){
+    tweakStyle=document.createElement('style');
+    tweakStyle.id=_PACK_TWEAKS_STYLE_ID;
+    const paletteStyle=document.getElementById(_PACK_PALETTE_STYLE_ID);
+    if(paletteStyle) document.head.insertBefore(tweakStyle,paletteStyle.nextSibling);
+    else document.head.appendChild(tweakStyle);
+  }
+  const decls=Object.keys(tweakVars).map(tok=>`${tok}:${tweakVars[tok]}`).join(';');
+  // Emit BOTH schemes: the palette style carries a higher-specificity
+  // :root.dark[data-skin=…] block, so a plain :root[data-skin=…] tweak rule
+  // loses the cascade in dark mode and every palette-defined token silently
+  // overrides the tweak. Mirroring both schemes (this element sits after the
+  // palette element, so document order settles equal specificity) keeps
+  // tweaks authoritative in light AND dark.
+  tweakStyle.textContent=decls?`:root[data-skin="${skinKey}"]{${decls}}:root.dark[data-skin="${skinKey}"]{${decls}}`:'';
+  _writePackPrepaintCache(pack,tweakVars);
+}
+
+function _loadPackScripts(pack){
+  if(!pack||!Array.isArray(pack.scripts)) return;
+  for(const rel of pack.scripts){
+    const src=_packAssetUrl(pack,rel);
+    if(!src||_PACK_LOADED_SCRIPT_URLS.has(src)) continue;
+    _PACK_LOADED_SCRIPT_URLS.add(src);
+    const script=document.createElement('script');
+    script.src=src;
+    script.defer=true;
+    script.dataset.hermesSkinPack=String(pack.key||'');
+    document.head.appendChild(script);
+  }
+}
+
+function _pickSkinPack(key){
+  // Thin compat shim (batch 3): pack picks route through the unified entry
+  // picker. Unknown keys stay a no-op, matching the legacy behavior.
+  const rawKey=String(key||'').trim().toLowerCase();
+  if(rawKey&&!_findSkinPack(rawKey)) return;
+  _pickSkinEntry(rawKey);
+}
+
+// ── Localized pack strings (batch 3) ────────────────────────────────────────
+// Pack manifests may carry name/description/tweak labels/option labels as
+// either a plain string or a localized object ({"en":"...","zh":"..."}).
+// Resolution follows the active WebUI locale.
+
+function _currentLocale(){
+  // setLocale() (static/i18n.js) resolves and persists the active locale to
+  // localStorage 'hermes-lang' on every call, making that key authoritative
+  // after boot; <html lang> (set from the locale's _speech tag) is the
+  // pre-boot fallback. Kept verbatim ('zh-Hant', not 'zh') — resolvePackText
+  // falls back to the base subtag itself.
+  try{
+    const stored=localStorage.getItem('hermes-lang');
+    if(stored) return String(stored);
+  }catch(_){}
+  return (document.documentElement.getAttribute('lang')||'en');
+}
+
+function resolvePackText(value){
+  if(value==null) return '';
+  if(typeof value==='string') return value;
+  if(typeof value==='object'){
+    // Locale keys look like en, zh, or zh-Hant (THEMES.md): try the full
+    // locale, then its base subtag, then en, then any first entry.
+    const lookup=(candidate)=>{
+      if(!candidate) return '';
+      const key=Object.keys(value).find(k=>k.toLowerCase()===String(candidate).toLowerCase());
+      return key?String(value[key]):'';
+    };
+    const locale=_currentLocale()||'en';
+    const exact=lookup(locale);
+    if(exact) return exact;
+    const base=lookup(locale.split('-')[0]);
+    if(base) return base;
+    if(Object.prototype.hasOwnProperty.call(value,'en')) return String(value.en);
+    for(const k of Object.keys(value)) return String(value[k]);
+  }
+  return String(value);
+}
+window.resolvePackText=resolvePackText;
+
+function _packPreviewColors(pack){
+  const colors=Array.isArray(pack&&pack.preview&&pack.preview.colors)
+    ?pack.preview.colors.slice(0,3).map(String)
+    :[];
+  const palette=pack&&pack.palette||{};
+  const fallback=(palette.light&&palette.light.accent)||(palette.dark&&palette.dark.accent)||'#888';
+  while(colors.length<3) colors.push(fallback);
+  return colors;
+}
+
+function _appendSkinPackTiles(grid){
+  // Unified pack tiles: builtin css-key packs first, in their classic
+  // _SKINS order; managed packs (aurora, user packs) after. User-origin
+  // packs carry the origin badge. NO section divider — the packs share the
+  // one picker grid with the Default tile. DOM nodes + textContent only:
+  // pack name/description arrive from user-controlled manifest files and
+  // must never be interpolated as HTML; preview colors are CSS values,
+  // safe as inline style backgrounds.
+  const cssKeyOrder=new Map();
+  (_SKINS||[]).forEach((skin,idx)=>{
+    const key=_skinKey(skin);
+    if(key&&key!=='default'&&!cssKeyOrder.has(key)) cssKeyOrder.set(key,idx);
+  });
+  const cssKeyPacks=[];
+  const managedPacks=[];
+  for(const pack of _SKIN_PACKS){
+    if(!pack||typeof pack.key!=='string'||!pack.key) continue;
+    if(pack.applyMode==='css-key') cssKeyPacks.push(pack);
+    else managedPacks.push(pack);
+  }
+  cssKeyPacks.sort((a,b)=>{
+    const ai=cssKeyOrder.get(String(a.key).toLowerCase());
+    const bi=cssKeyOrder.get(String(b.key).toLowerCase());
+    return (ai===undefined?_SKINS.length:ai)-(bi===undefined?_SKINS.length:bi);
+  });
+  for(const pack of cssKeyPacks.concat(managedPacks)){
+    const key=String(pack.key).toLowerCase();
+    const isCssKey=pack.applyMode==='css-key';
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='skin-pick-btn skin-pack-tile';
+    btn.dataset.skinVal=isCssKey?key:('pack:'+key);
+    btn.onclick=()=>_pickSkinEntry(key);
+    const dotRow=document.createElement('div');
+    dotRow.className='skin-pack-dot-row';
+    for(const color of _packPreviewColors(pack)){
+      const dot=document.createElement('span');
+      dot.className='skin-pack-dot';
+      dot.style.background=color;
+      dotRow.appendChild(dot);
+    }
+    const nameEl=document.createElement('span');
+    nameEl.className='skin-pack-name';
+    nameEl.textContent=resolvePackText(pack.name)||key;
+    btn.appendChild(dotRow);
+    btn.appendChild(nameEl);
+    if(pack.origin==='user'){
+      const badge=document.createElement('span');
+      badge.className='skin-pack-badge skin-pack-badge-user';
+      badge.textContent=(typeof t==='function')
+        ?t('settings_skins_pack_badge_user')
+        :'User pack';
+      if(pack.shadows&&typeof t==='function') badge.title=t('settings_skins_pack_shadow_note');
+      btn.appendChild(badge);
+    }
+    const description=resolvePackText(pack.description);
+    if(description) btn.title=description;
+    grid.appendChild(btn);
+  }
+}
+
+function _appendExtensionSkinTiles(grid){
+  // Extension-registered skins (registerHermesSkin) are runtime
+  // contributions, not packs — their tiles follow the pack tiles.
+  for(const skin of (_SKINS||[])){
+    if(!skin||!skin._extension) continue;
+    const key=_skinKey(skin);
+    if(!key||key==='default') continue;
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='skin-pick-btn skin-pack-tile';
+    btn.dataset.skinVal=key;
+    btn.onclick=()=>_pickSkinEntry(key);
+    const dotRow=document.createElement('div');
+    dotRow.className='skin-pack-dot-row';
+    for(const color of (skin.colors||[])){
+      const dot=document.createElement('span');
+      dot.className='skin-pack-dot';
+      dot.style.background=color;
+      dotRow.appendChild(dot);
+    }
+    const nameEl=document.createElement('span');
+    nameEl.className='skin-pack-name';
+    nameEl.textContent=skin.label||skin.name||key;
+    btn.appendChild(dotRow);
+    btn.appendChild(nameEl);
+    grid.appendChild(btn);
+  }
+}
+
+function _ensureSkinPacksFetched(){
+  // The boot reconcile only fetches when a pack is/was active, so the picker
+  // lazily fetches once per session on first build — a just-installed pack
+  // must be pickable without a reload.
+  if(_SKIN_PACKS_FETCHED||_SKIN_PACKS_FETCH_ATTEMPTED) return;
+  _SKIN_PACKS_FETCH_ATTEMPTED=true;
+  _fetchSkinPacks().then(list=>{
+    if(Array.isArray(list)&&list.length&&document.getElementById('skinPickerGrid')){
+      _buildSkinPicker();
+    }
+  }).catch(()=>{});
+}
+
+function _activeSkinEntryMarker(){
+  // The tile marker for the currently selected entry: css-key packs use
+  // their bare key, managed packs the pack: prefix, extension skins their
+  // key, everything else 'default'.
+  const packKey=(localStorage.getItem('hermes-skin-pack')||'').trim().toLowerCase();
+  if(packKey){
+    const pack=_findSkinPack(packKey);
+    if(pack) return pack.applyMode==='css-key'?String(pack.key).toLowerCase():_packSkinKey(pack);
+    return _VALID_SKINS.has(packKey)?packKey:('pack:'+packKey);
+  }
+  const applied=(document.documentElement.dataset.skin||'').toLowerCase();
+  return applied&&!applied.startsWith('pack:')?applied:'default';
+}
+
 function _buildSkinPicker(activeSkin){
   const grid=$('skinPickerGrid');
   if(!grid) return;
   grid.innerHTML='';
-  for(const skin of _SKINS){
-    const key=(skin.value||skin.name).toLowerCase();
-    const btn=document.createElement('button');
-    btn.type='button';
-    btn.className='skin-pick-btn';
-    btn.dataset.skinVal=key;
-    btn.style.cssText='border:1px solid var(--border2);border-radius:8px;padding:8px 4px;text-align:center;cursor:pointer;background:none;transition:all .15s';
-    btn.onclick=()=>_pickSkin(key);
-    // Build with DOM nodes + textContent so an extension-registered skin's
-    // label/name (registerHermesSkin descriptor) can never inject markup into
-    // the picker. Swatch colors are already value-sanitized upstream, but set
-    // them via element.style.background (not interpolated HTML) as defense in depth.
-    const dotRow=document.createElement('div');
-    dotRow.style.cssText='display:flex;gap:3px;justify-content:center;margin-bottom:4px';
-    for(const c of (skin.colors||[])){
-      const dot=document.createElement('span');
-      dot.style.cssText='display:inline-block;width:10px;height:10px;border-radius:50%';
-      dot.style.background=c;
-      dotRow.appendChild(dot);
-    }
-    const labelEl=document.createElement('span');
-    labelEl.style.cssText='font-size:11px;color:var(--text)';
-    labelEl.textContent=skin.label||skin.name||'';
-    btn.appendChild(dotRow);
-    btn.appendChild(labelEl);
-    grid.appendChild(btn);
+  // ONE grid (batch 3): a Default tile, then every pack — builtin css-key
+  // skins in their classic order first, then managed packs — then any
+  // extension-registered skins. The old builtin-skin section is gone:
+  // builtins ARE packs now.
+  const defBtn=document.createElement('button');
+  defBtn.type='button';
+  defBtn.className='skin-pick-btn skin-pack-tile';
+  defBtn.dataset.skinVal='default';
+  defBtn.onclick=()=>_pickSkinEntry('');
+  const defDots=document.createElement('div');
+  defDots.className='skin-pack-dot-row';
+  for(const color of ['#FFD700','#FFBF00','#CD7F32']){
+    const dot=document.createElement('span');
+    dot.className='skin-pack-dot';
+    dot.style.background=color;
+    defDots.appendChild(dot);
   }
-  _syncSkinPicker((activeSkin||'default').toLowerCase());
+  const defLabel=document.createElement('span');
+  defLabel.className='skin-pack-name';
+  const defText=(typeof t==='function')?t('font_size_default'):'';
+  defLabel.textContent=(defText&&defText!=='font_size_default')?defText:'Default';
+  defBtn.appendChild(defDots);
+  defBtn.appendChild(defLabel);
+  grid.appendChild(defBtn);
+  _appendSkinPackTiles(grid);
+  _appendExtensionSkinTiles(grid);
+  // The live applied state is authoritative (callers used to hydrate the
+  // active marker from the builtin skin value).
+  const active=_activeSkinEntryMarker()||String(activeSkin||'default').toLowerCase();
+  _syncSkinPicker(active);
+  _ensureSkinPacksFetched();
 }
 
 // ── Extension-registered skins (theme-registration capability) ───────────────
@@ -3981,6 +4685,91 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
       try{
         api('/api/settings',{method:'POST',body:JSON.stringify({theme,skin})});
       }catch(_){}
+    }
+    // Skin-pack reconcile — mirrors the explicit-preference semantics above:
+    // an explicit nonempty localStorage pack wins (divergence → push-back
+    // POST), a server-only pack is adopted, and the resolved key must exist
+    // in the fetched pack list or we fall back to the default look with a
+    // correction POST. Batch 3 adds the legacy-skin migration: with
+    // skin_pack empty, a non-default builtin skin whose key now exists as a
+    // css-key pack is adopted (once) with a corrective POST. The pack list
+    // fetch runs ONLY when a pack is/was active or migration is possible —
+    // never on the plain default boot path.
+    const srvPackKey=typeof s.skin_pack==='string'?s.skin_pack.trim().toLowerCase():'';
+    const lsPackKey=(localStorage.getItem('hermes-skin-pack')||'').trim().toLowerCase();
+    if(s.skin_tweaks&&typeof s.skin_tweaks==='object') window._skinTweaksState=s.skin_tweaks;
+    if(s.skin_script_consents&&typeof s.skin_script_consents==='object') window._skinScriptConsents=s.skin_script_consents;
+    let bootPackKey='';
+    let migrateLegacySkinKey='';
+    if(lsPackKey){
+      bootPackKey=lsPackKey;
+      if(lsPackKey!==srvPackKey){
+        try{
+          api('/api/settings',{method:'POST',body:JSON.stringify({skin_pack:lsPackKey})});
+        }catch(_){}
+      }
+    }else if(srvPackKey){
+      bootPackKey=srvPackKey;
+      try{localStorage.setItem('hermes-skin-pack',srvPackKey);}catch(_){}
+    }else if(skin&&skin!=='default'){
+      migrateLegacySkinKey=skin;
+    }
+    if(bootPackKey||migrateLegacySkinKey){
+      if(lsPackKey){
+        // The builtin reconcile above re-applied the builtin skin; restore
+        // the pre-paint skin marker so the cached inline palette keeps
+        // driving the paint until the pack list resolves. The persisted
+        // applied key is exact (css-key packs use their bare key); a missing
+        // key (first-ever pack adoption) assumes the managed pack: prefix.
+        const appliedMarker=(localStorage.getItem('hermes-skin-applied')||'').trim().toLowerCase();
+        document.documentElement.dataset.skin=appliedMarker||('pack:'+bootPackKey);
+        _setResolvedTheme(_resolvedThemeBaseDark);
+      }
+      _fetchSkinPacks().then(list=>{
+        if(!Array.isArray(list)) return;   // fetch failed: keep pre-paint state
+        if(migrateLegacySkinKey&&!bootPackKey){
+          const migrated=_findSkinPack(migrateLegacySkinKey);
+          if(!migrated){
+            // A classic builtin/extension skin with no pack counterpart: the
+            // builtin reconcile above already applied it — record the applied
+            // key so the pre-paint override matches from the next load.
+            const current=(document.documentElement.dataset.skin||'').toLowerCase();
+            _writeAppliedSkinKey(current==='default'?'':current);
+            return;
+          }
+          bootPackKey=String(migrated.key).toLowerCase();
+          try{localStorage.setItem('hermes-skin-pack',bootPackKey);}catch(_){}
+          try{
+            api('/api/settings',{method:'POST',body:JSON.stringify({skin_pack:bootPackKey})});
+          }catch(_){}
+        }
+        const pack=_findSkinPack(bootPackKey);
+        if(!pack){
+          // Pack uninstalled between sessions: fall back to the default look
+          // and correct the server so the next refresh stays consistent.
+          try{localStorage.setItem('hermes-skin-pack','');}catch(_){}
+          _applySkinEntry('');
+          const packHiddenFallback=$('settingsSkinPack');
+          if(packHiddenFallback) packHiddenFallback.value='';
+          try{
+            api('/api/settings',{method:'POST',body:JSON.stringify({skin_pack:'',skin:'default'})});
+          }catch(_){}
+          return;
+        }
+        _applySkinEntry(pack.key);
+        const packHidden=$('settingsSkinPack');
+        if(packHidden) packHidden.value=String(pack.key).toLowerCase();
+        // W7: boot-time script loads are silent — they run only for packs the
+        // user already consented to; the consent dialog itself is a picker
+        // action, never part of boot.
+        if(Array.isArray(pack.scripts)&&pack.scripts.length
+          &&window._skinScriptConsents&&window._skinScriptConsents[pack.key]===true){
+          _loadPackScripts(pack);
+        }
+        if(document.getElementById('skinPickerGrid')){
+          _buildSkinPicker();
+        }
+      }).catch(()=>{});
     }
     const fontSize=(s.font_size||localStorage.getItem('hermes-font-size')||'default');
     localStorage.setItem('hermes-font-size',fontSize);

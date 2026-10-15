@@ -19,9 +19,12 @@ def test_geist_contrast_skin_is_registered_with_matching_key_and_label():
 
 
 def test_geist_contrast_slash_theme_uses_skin_value_key():
-    assert "const skins=(_SKINS||[]).map(s=>(s.value||s.name).toLowerCase());" in COMMANDS_JS
-    assert "skins.includes(val)" in COMMANDS_JS
-    assert "showToast(t('theme_set')+appearance.skin)" in COMMANDS_JS
+    # Batch 3 unification: `/theme geist-contrast` resolves through the pack
+    # list (builtin skins ship as css-key packs), so the value key must route
+    # through _pickSkinEntry — no separate builtin-skin branch remains.
+    assert "_pickSkinEntry(packKey)" in COMMANDS_JS
+    assert "packList.some(p=>p&&typeof p.key==='string'&&p.key.toLowerCase()===bare)" in COMMANDS_JS
+    assert "showToast(t('theme_set')+packKey)" in COMMANDS_JS
 
 
 def test_geist_contrast_dark_tokens_use_yellow_accent_with_neutral_surfaces():

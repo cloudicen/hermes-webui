@@ -1185,47 +1185,38 @@ async function cmdUsage(){
 
 async function cmdTheme(args){
   const themes=['system','dark','light'];
-  const skins=(_SKINS||[]).map(s=>(s.value||s.name).toLowerCase());
   const legacyThemes=Object.keys(_LEGACY_THEME_MAP||{});
   const val=(args||'').toLowerCase().trim();
-  // Check if it's a theme
-  if(themes.includes(val)||legacyThemes.includes(val)){
-    const appearance=_normalizeAppearance(
-      val,
-      legacyThemes.includes(val)?null:localStorage.getItem('hermes-skin')
-    );
-    localStorage.setItem('hermes-theme',appearance.theme);
-    localStorage.setItem('hermes-skin',appearance.skin);
-    _applyTheme(appearance.theme);
-    _applySkin(appearance.skin);
-    try{await api('/api/settings',{method:'POST',body:JSON.stringify({theme:appearance.theme,skin:appearance.skin})});}catch(e){}
-    const sel=$('settingsTheme');
-    if(sel)sel.value=appearance.theme;
-    const skinSel=$('settingsSkin');
-    if(skinSel)skinSel.value=appearance.skin;
-    if(typeof _syncThemePicker==='function') _syncThemePicker(appearance.theme);
-    if(typeof _syncSkinPicker==='function') _syncSkinPicker(appearance.skin);
-    showToast(t('theme_set')+appearance.theme+(legacyThemes.includes(val)?` + ${appearance.skin}`:''));
+  // Unified resolution (batch 3): a theme name routes through _pickTheme,
+  // which never touches the skin axis; ANY known pack key — builtin css-key
+  // or managed — routes through _pickSkinEntry. Exact theme names are
+  // checked first so `/theme dark` keeps meaning the theme; legacy aliases
+  // keep their theme mapping while the skin half stays the user's entry.
+  const packList=(typeof window!=='undefined'&&Array.isArray(window._SKIN_PACKS))?window._SKIN_PACKS:[];
+  const packKeyOf=(candidate)=>{
+    if(!candidate) return '';
+    const bare=candidate.startsWith('pack:')?candidate.slice(5):candidate;
+    if(bare&&packList.some(p=>p&&typeof p.key==='string'&&p.key.toLowerCase()===bare)) return bare;
+    return '';
+  };
+  if(themes.includes(val)&&typeof _pickTheme==='function'){
+    _pickTheme(val);
+    showToast(t('theme_set')+val);
     return;
   }
-  // Check if it's a skin
-  if(skins.includes(val)){
-    const appearance=_normalizeAppearance(localStorage.getItem('hermes-theme'),val);
-    localStorage.setItem('hermes-theme',appearance.theme);
-    localStorage.setItem('hermes-skin',appearance.skin);
-    _applyTheme(appearance.theme);
-    _applySkin(appearance.skin);
-    try{await api('/api/settings',{method:'POST',body:JSON.stringify({theme:appearance.theme,skin:appearance.skin})});}catch(e){}
-    const sel=$('settingsSkin');
-    if(sel)sel.value=appearance.skin;
-    const themeSel=$('settingsTheme');
-    if(themeSel)themeSel.value=appearance.theme;
-    if(typeof _syncThemePicker==='function') _syncThemePicker(appearance.theme);
-    if(typeof _syncSkinPicker==='function') _syncSkinPicker(appearance.skin);
-    showToast(t('theme_set')+appearance.skin);
+  const packKey=packKeyOf(val);
+  if(packKey&&typeof _pickSkinEntry==='function'){
+    _pickSkinEntry(packKey);
+    try{await api('/api/settings',{method:'POST',body:JSON.stringify({skin_pack:packKey})});}catch(e){}
+    showToast(t('theme_set')+packKey);
     return;
   }
-  showToast(t('theme_usage')+themes.join('|')+' | '+skins.join('|')+' | legacy:'+legacyThemes.join('|'));
+  if(legacyThemes.includes(val)&&typeof _pickTheme==='function'){
+    _pickTheme(val);
+    showToast(t('theme_set')+_normalizeAppearance(val,'default').theme);
+    return;
+  }
+  showToast(t('theme_usage')+themes.join('|')+' | legacy:'+legacyThemes.join('|')+' | pack:<key> ('+packList.length+')');
 }
 
 // Subcommands owned by the agent's own /skills write-approval handler

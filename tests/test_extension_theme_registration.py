@@ -71,8 +71,9 @@ def test_skin_picker_label_is_not_an_innerhtml_sink():
     assert 'btn.innerHTML=`' not in BOOT_JS, (
         "skin picker must not assign extension-controlled label via innerHTML"
     )
-    # The label must be set as text on a dedicated element.
-    assert "labelEl.textContent=skin.label||skin.name" in BOOT_JS, (
+    # The label must be set as text on a dedicated element. (Batch 3: the
+    # unified picker renders extension skins in _appendExtensionSkinTiles.)
+    assert "nameEl.textContent=skin.label||skin.name||key" in BOOT_JS, (
         "skin picker label must be rendered via textContent (XSS-safe)"
     )
 

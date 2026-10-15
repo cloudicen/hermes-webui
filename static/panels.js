@@ -8840,6 +8840,359 @@ function _syncStructuredCodeLinesEnabled(){
   linesField.style.opacity=isAuto?'':'0.5';
 }
 
+// ── Skin packs: per-pack tweak panel + script consent (W6/W7) ───────────────
+// Renders into the W5 containers (#skinPackTweaks / #skinPackScripts) in the
+// Appearance pane. Shared runtime state lives on window so boot.js and this
+// panel read/write ONE source of truth (boot.js declares the mirrors):
+//   window._skinTweaksState      {packKey:{tweakId:value}}  — server `skin_tweaks`
+//   window._skinScriptConsents   {packKey:boolean}          — server `skin_script_consents`
+// Pack manifests are third-party content: every label below is built with
+// createElement/textContent, never innerHTML (repo XSS discipline).
+
+function _activeSkinPack(){
+  const key=(localStorage.getItem('hermes-skin-pack')||'').trim().toLowerCase();
+  if(!key||typeof _findSkinPack!=='function') return null;
+  return _findSkinPack(key);
+}
+
+function _packTweakEffectiveValue(pack,tweak){
+  const stored=(window._skinTweaksState&&typeof window._skinTweaksState==='object')
+    ?window._skinTweaksState[pack.key]
+    :null;
+  return (stored&&Object.prototype.hasOwnProperty.call(stored,tweak.id))
+    ?stored[tweak.id]
+    :tweak.default;
+}
+
+function _packTweakValuesDiffer(pack,before,after){
+  // Semantic per-tweak comparison (not JSON equality) so a re-serialized but
+  // unchanged server response never triggers a control re-render.
+  const tweaks=(pack&&Array.isArray(pack.tweaks))?pack.tweaks:[];
+  for(const tweak of tweaks){
+    if(!tweak||typeof tweak!=='object'||!tweak.id) continue;
+    const a=(before&&Object.prototype.hasOwnProperty.call(before,tweak.id))?before[tweak.id]:tweak.default;
+    const b=(after&&Object.prototype.hasOwnProperty.call(after,tweak.id))?after[tweak.id]:tweak.default;
+    if(String(a)!==String(b)) return true;
+  }
+  return false;
+}
+
+// Batch 4 (image tweaks): client-side upload pre-checks + preview gating.
+// The filename regex mirrors boot.js _PACK_UPLOAD_FILE_RE (classic scripts
+// share the global lexical scope, so the two constants need distinct names —
+// keep them in sync); the stored value is always a server-assigned upload
+// filename, so a regex miss renders no preview.
+const _PACK_TWEAK_UPLOAD_FILE_RE=/^[a-f0-9]{64}\.(png|jpg|jpeg|gif|webp)$/;
+const _PACK_IMAGE_MIME_TYPES=new Set(['image/png','image/jpeg','image/gif','image/webp']);
+const _PACK_IMAGE_MAX_BYTES=2*1024*1024;
+
+function _buildPackTweakControl(pack,tweak){
+  // Live-apply commit: write through the shared window state (never a
+  // captured per-render object — the autosave resync replaces the state map
+  // and a stale closure would silently drop later edits), re-apply the pack
+  // tweaks, then autosave.
+  const commit=value=>{
+    if(!window._skinTweaksState||typeof window._skinTweaksState!=='object') window._skinTweaksState={};
+    if(!window._skinTweaksState[pack.key]||typeof window._skinTweaksState[pack.key]!=='object') window._skinTweaksState[pack.key]={};
+    window._skinTweaksState[pack.key][tweak.id]=value;
+    if(typeof _applyPackTweakValues==='function') _applyPackTweakValues(pack.key,window._skinTweaksState[pack.key]);
+    _scheduleAppearanceAutosave();
+  };
+  const control=document.createElement('div');
+  control.className='skin-pack-tweak-control';
+  const current=_packTweakEffectiveValue(pack,tweak);
+  switch(tweak.type){
+    case 'range':{
+      const input=document.createElement('input');
+      input.type='range';
+      input.min=String(tweak.min);
+      input.max=String(tweak.max);
+      input.step=String(tweak.step);
+      input.value=String(current);
+      const valueLabel=document.createElement('span');
+      valueLabel.className='skin-pack-tweak-value';
+      valueLabel.textContent=String(current);
+      input.oninput=()=>{
+        valueLabel.textContent=input.value;
+        commit(Number(input.value));
+      };
+      control.appendChild(input);
+      control.appendChild(valueLabel);
+      break;
+    }
+    case 'select':{
+      const select=document.createElement('select');
+      const options=Array.isArray(tweak.options)?tweak.options:[];
+      for(const opt of options){
+        if(!opt||typeof opt!=='object') continue;
+        const option=document.createElement('option');
+        option.value=String(opt.value);
+        // Option labels may be localized objects ({"en","zh"}) — resolve per
+        // the active WebUI locale (boot.js resolvePackText).
+        const label=(typeof resolvePackText==='function')?resolvePackText(opt.label):String(opt.label==null?'':opt.label);
+        option.textContent=label||String(opt.value);
+        select.appendChild(option);
+      }
+      select.value=String(current);
+      if(select.selectedIndex<0) select.value=String(tweak.default);
+      select.onchange=()=>commit(select.value);
+      control.appendChild(select);
+      break;
+    }
+    case 'toggle':{
+      const input=document.createElement('input');
+      input.type='checkbox';
+      input.checked=!!current;
+      input.onchange=()=>commit(input.checked);
+      control.appendChild(input);
+      break;
+    }
+    case 'color':{
+      const input=document.createElement('input');
+      input.type='color';
+      // input[type=color] only accepts #rrggbb; fall back to the tweak
+      // default (then black) for shorter stored hex forms.
+      const hex=v=>(/^#[0-9a-fA-F]{6}$/.test(String(v))?String(v):null);
+      input.value=hex(current)||hex(tweak.default)||'#000000';
+      input.onchange=()=>commit(input.value);
+      control.appendChild(input);
+      break;
+    }
+    case 'image':{
+      // Upload button + stored-image preview + remove. The stored value is a
+      // server-assigned upload filename; upload POSTs the raw File to the
+      // pack's upload route and commits the returned filename through the
+      // SAME commit chain as every other control (state →
+      // _applyPackTweakValues → autosave). Remove deletes the state entry so
+      // boot.js omits the token (no url() → var(--token, none) fallback).
+      const wrap=document.createElement('div');
+      wrap.className='skin-pack-tweak-image';
+      const storedFileName=(typeof current==='string'&&_PACK_TWEAK_UPLOAD_FILE_RE.test(current))?current:null;
+      if(storedFileName){
+        const img=document.createElement('img');
+        img.className='skin-pack-tweak-preview';
+        img.alt='';
+        img.src=`/api/skins/${encodeURIComponent(pack.key)}/uploads/${storedFileName}`;
+        wrap.appendChild(img);
+      }
+      const fileInput=document.createElement('input');
+      fileInput.type='file';
+      fileInput.accept='image/png,image/jpeg,image/gif,image/webp';
+      fileInput.style.display='none';
+      const uploadBtn=document.createElement('button');
+      uploadBtn.type='button';
+      uploadBtn.className='settings-action-btn';
+      uploadBtn.textContent=t('settings_skins_pack_tweaks_upload');
+      uploadBtn.onclick=()=>fileInput.click();
+      fileInput.onchange=async()=>{
+        const file=fileInput.files&&fileInput.files[0];
+        // Reset so picking the same file twice fires change again.
+        fileInput.value='';
+        if(!file) return;
+        if(!_PACK_IMAGE_MIME_TYPES.has(file.type)||file.size>_PACK_IMAGE_MAX_BYTES){
+          showToast(t('settings_skins_pack_tweak_upload_invalid'),4000);
+          return;
+        }
+        uploadBtn.disabled=true;
+        try{
+          // Mirrors the attachment upload convention (ui.js): raw body,
+          // credentials included, base-relative URL; the global fetch
+          // wrapper (index.html) adds the same-origin CSRF header.
+          const url=new URL(`api/skins/${encodeURIComponent(pack.key)}/upload`,document.baseURI||location.href).href;
+          const res=await fetch(url,{method:'POST',credentials:'include',body:file,headers:{'Content-Type':file.type}});
+          let data=null;
+          try{ data=await res.json(); }catch(_){}
+          if(!res.ok){
+            showToast(`${t('settings_skins_pack_tweak_upload_failed')}: ${((data&&data.error)||res.status)}`,4000);
+            return;
+          }
+          if(!data||typeof data.file!=='string'){
+            showToast(t('settings_skins_pack_tweak_upload_failed'),4000);
+            return;
+          }
+          commit(data.file);
+          _renderSkinPackTweaks(pack);
+        }catch(_){
+          showToast(t('settings_skins_pack_tweak_upload_failed'),4000);
+        }finally{
+          uploadBtn.disabled=false;
+        }
+      };
+      wrap.appendChild(uploadBtn);
+      wrap.appendChild(fileInput);
+      if(storedFileName){
+        const removeBtn=document.createElement('button');
+        removeBtn.type='button';
+        removeBtn.className='settings-action-btn';
+        removeBtn.textContent=t('settings_skins_pack_tweaks_remove');
+        removeBtn.onclick=()=>{
+          if(window._skinTweaksState&&window._skinTweaksState[pack.key]) delete window._skinTweaksState[pack.key][tweak.id];
+          if(typeof _applyPackTweakValues==='function') _applyPackTweakValues(pack.key,(window._skinTweaksState&&window._skinTweaksState[pack.key])||{});
+          _scheduleAppearanceAutosave();
+          _renderSkinPackTweaks(pack);
+        };
+        wrap.appendChild(removeBtn);
+      }
+      control.appendChild(wrap);
+      break;
+    }
+  }
+  return control;
+}
+
+function _renderSkinPackTweaks(pack){
+  const box=$('skinPackTweaks');
+  if(!box) return;
+  box.textContent='';
+  const tweaks=(pack&&Array.isArray(pack.tweaks))
+    ?pack.tweaks.filter(tweak=>tweak&&typeof tweak==='object'&&tweak.id
+      &&['range','select','toggle','color','image'].includes(tweak.type))
+    :[];
+  if(!pack||!tweaks.length) return;
+  const title=document.createElement('div');
+  title.className='skin-pack-section-label';
+  title.textContent=t('settings_skins_pack_tweaks_title');
+  const head=document.createElement('div');
+  head.className='skin-pack-section-head';
+  head.appendChild(title);
+  const resetBtn=document.createElement('button');
+  resetBtn.type='button';
+  resetBtn.className='settings-action-btn';
+  resetBtn.textContent=t('settings_skins_pack_tweaks_reset');
+  resetBtn.onclick=()=>{
+    if(!window._skinTweaksState||typeof window._skinTweaksState!=='object') window._skinTweaksState={};
+    window._skinTweaksState[pack.key]={};
+    if(typeof _applyPackTweakValues==='function') _applyPackTweakValues(pack.key,{});
+    _renderSkinPackTweaks(pack);
+    _scheduleAppearanceAutosave();
+  };
+  head.appendChild(resetBtn);
+  box.appendChild(head);
+  for(const tweak of tweaks){
+    const row=document.createElement('div');
+    row.className='skin-pack-tweak-row';
+    const label=document.createElement('label');
+    label.className='skin-pack-tweak-label';
+    // Tweak labels may be localized objects ({"en","zh"}) — resolve per the
+    // active WebUI locale (boot.js resolvePackText).
+    const labelText=(typeof resolvePackText==='function')?resolvePackText(tweak.label):String(tweak.label==null?'':tweak.label);
+    label.textContent=labelText||String(tweak.id);
+    row.appendChild(label);
+    row.appendChild(_buildPackTweakControl(pack,tweak));
+    box.appendChild(row);
+  }
+}
+
+function _requestSkinPackScriptConsent(pack){
+  // W7: pack scripts load only behind explicit consent. Shown on explicit
+  // pack selection (picker click / /theme) — never during boot, where
+  // already-consented packs load silently.
+  if(!pack||!Array.isArray(pack.scripts)||!pack.scripts.length) return;
+  if(window._skinScriptConsents&&window._skinScriptConsents[pack.key]===true) return;
+  showConfirmDialog({
+    title:t('settings_skins_pack_scripts_warning_title'),
+    message:t('settings_skins_pack_scripts_warning_body'),
+    confirmLabel:t('settings_skins_pack_scripts_enable'),
+    cancelLabel:t('settings_skins_pack_scripts_skip'),
+    danger:true
+  }).then(ok=>{
+    if(!ok) return;   // "Skip for now": the pack stays applied, scripts stay unloaded
+    if(!window._skinScriptConsents||typeof window._skinScriptConsents!=='object') window._skinScriptConsents={};
+    window._skinScriptConsents[pack.key]=true;
+    _renderSkinPackScripts(pack);
+    _scheduleAppearanceAutosave();
+    if(typeof _loadPackScripts==='function') _loadPackScripts(pack);
+  });
+}
+
+function _saveAppearanceSettingsThenReload(){
+  // Scripts already in the page cannot be unloaded, so disabling them needs
+  // a reload — but only AFTER the revoked consent is durably saved. Post
+  // through the serialized settings queue; a failed POST keeps the page (and
+  // the Retry affordance) alive instead of reloading into stale consent.
+  const payload=_appearancePayloadFromUi();
+  _rememberAppearanceSaved(payload);
+  _settingsAppearanceAutosaveRetryPayload=payload;
+  _setAppearanceAutosaveStatus('saving');
+  _enqueueSettingsPost({method:'POST',body:JSON.stringify(payload)})
+    .then(()=>{ location.reload(); })
+    .catch(()=>{ _setAppearanceAutosaveStatus('failed'); });
+}
+
+function _renderSkinPackScripts(pack){
+  const box=$('skinPackScripts');
+  if(!box) return;
+  box.textContent='';
+  if(!pack||!Array.isArray(pack.scripts)||!pack.scripts.length) return;
+  if(!window._skinScriptConsents||typeof window._skinScriptConsents!=='object') window._skinScriptConsents={};
+  const consented=window._skinScriptConsents[pack.key]===true;
+  const title=document.createElement('div');
+  title.className='skin-pack-section-label';
+  title.textContent=t('settings_skins_pack_scripts_title');
+  box.appendChild(title);
+  const row=document.createElement('div');
+  row.className='skin-pack-tweak-row';
+  const chip=document.createElement('span');
+  chip.className='skin-pack-badge'+(consented?' skin-pack-badge-user':'');
+  chip.textContent=t(consented?'settings_skins_pack_scripts_enabled_chip':'settings_skins_pack_scripts_disabled_chip');
+  row.appendChild(chip);
+  const action=document.createElement('button');
+  action.type='button';
+  action.className='settings-action-btn';
+  if(consented){
+    action.textContent=t('settings_skins_pack_scripts_disable');
+    action.onclick=()=>{
+      window._skinScriptConsents[pack.key]=false;
+      _saveAppearanceSettingsThenReload();
+    };
+  }else{
+    action.textContent=t('settings_skins_pack_scripts_enable');
+    action.onclick=()=>_requestSkinPackScriptConsent(pack);
+  }
+  row.appendChild(action);
+  box.appendChild(row);
+}
+
+function _syncSkinPackSettingsUi(){
+  // Render both pack sections for the currently active pack (each renderer
+  // hides its section when no pack is active / nothing to show). Called from
+  // the settings hydration, the autosave resync, and the boot.js picker
+  // paths (_pickSkinPack / _pickSkin).
+  const tweaksBox=$('skinPackTweaks');
+  const scriptsBox=$('skinPackScripts');
+  if(!tweaksBox&&!scriptsBox) return;
+  const pack=_activeSkinPack();
+  if(tweaksBox) _renderSkinPackTweaks(pack);
+  if(scriptsBox) _renderSkinPackScripts(pack);
+}
+
+function _syncPackSettingsFromServerResponse(saved){
+  // Mirror the server-normalized pack settings back into the shared state +
+  // hidden input + localStorage marker (the server clamps/drops invalid
+  // values — the UI must reflect exactly what was persisted). Re-renders the
+  // pack sections only when an effective value actually changed, so a
+  // response arriving mid-interaction never yanks the controls.
+  if(!saved||typeof saved!=='object') return;
+  if(typeof saved.skin_pack==='string'){
+    const normalized=saved.skin_pack.trim().toLowerCase();
+    const hidden=$('settingsSkinPack');
+    if(hidden&&hidden.value!==normalized) hidden.value=normalized;
+    try{
+      if((localStorage.getItem('hermes-skin-pack')||'')!==normalized) localStorage.setItem('hermes-skin-pack',normalized);
+    }catch(_){}
+  }
+  const tweaksBefore=window._skinTweaksState;
+  const consentsBefore=window._skinScriptConsents;
+  if(saved.skin_tweaks&&typeof saved.skin_tweaks==='object') window._skinTweaksState=saved.skin_tweaks;
+  if(saved.skin_script_consents&&typeof saved.skin_script_consents==='object') window._skinScriptConsents=saved.skin_script_consents;
+  const pack=_activeSkinPack();
+  if(!pack) return;
+  const before=(tweaksBefore&&typeof tweaksBefore==='object')?tweaksBefore[pack.key]:null;
+  const after=window._skinTweaksState[pack.key];
+  const consentChanged=((consentsBefore&&consentsBefore[pack.key])===true)!==(window._skinScriptConsents[pack.key]===true);
+  if(consentChanged||_packTweakValuesDiffer(pack,before,after)) _syncSkinPackSettingsUi();
+}
+
 function _appearancePayloadFromUi(){
   const worklogDetailsExpanded=!!($('settingsWorklogDetailsExpandedDefault')||{}).checked;
   const chatActivityModeSel=$('settingsChatActivityDisplayMode');
@@ -8847,6 +9200,12 @@ function _appearancePayloadFromUi(){
   return {
     theme: ($('settingsTheme')||{}).value || localStorage.getItem('hermes-theme') || 'dark',
     skin: ($('settingsSkin')||{}).value || localStorage.getItem('hermes-skin') || 'default',
+    // Skin packs (W6/W7): the full maps ride every appearance autosave; the
+    // server deep-merges per-pack entries, so other packs' stored values are
+    // preserved.
+    skin_pack: (($('settingsSkinPack')||{}).value || ''),
+    skin_tweaks: (window._skinTweaksState || {}),
+    skin_script_consents: (window._skinScriptConsents || {}),
     font_size: ($('settingsFontSize')||{}).value || localStorage.getItem('hermes-font-size') || 'default',
     chat_activity_display_mode: chatActivityModeSel&&(chatActivityModeSel.value==='transparent_stream'||chatActivityModeSel.value==='hide_all_activity')
       ? chatActivityModeSel.value
@@ -8992,6 +9351,9 @@ async function _autosaveAppearanceSettings(payload){
       if(linesField) linesField.value=window._structuredCodeAutoTreeLines;
       _syncStructuredCodeLinesEnabled();
     }
+    // Skin packs (W6): mirror the server-normalized pack settings back into
+    // the shared state + hidden input (same re-sync pattern as above).
+    _syncPackSettingsFromServerResponse(saved);
     if(saved&&payload&&Object.prototype.hasOwnProperty.call(payload,'worklog_details_expanded_default')&&(
       Object.prototype.hasOwnProperty.call(saved,'worklog_details_expanded_default') ||
       Object.prototype.hasOwnProperty.call(saved,'activity_feed_expanded_default')
@@ -9496,10 +9858,39 @@ async function loadSettingsPanel(){
     const themeVal=settings.theme||'dark';
     if(themeSel) themeSel.value=themeVal;
     if(typeof _syncThemePicker==='function') _syncThemePicker(themeVal);
-    const skinVal=(localStorage.getItem('hermes-skin')||settings.skin||'default').toLowerCase();
+    // Unified skin axis (batch 3): the pack key is authoritative; the legacy
+    // skin hidden input derives from it (css-key pack → its key, else
+    // 'default') so the appearance payload is consistent by construction.
+    // localStorage wins over the server value for the pack key (same
+    // explicit-preference semantics as the theme above — boot pushes
+    // divergence back to the server).
+    if(settings.skin_tweaks&&typeof settings.skin_tweaks==='object') window._skinTweaksState=settings.skin_tweaks;
+    else window._skinTweaksState={};
+    if(settings.skin_script_consents&&typeof settings.skin_script_consents==='object') window._skinScriptConsents=settings.skin_script_consents;
+    else window._skinScriptConsents={};
+    const srvPackVal=typeof settings.skin_pack==='string'?settings.skin_pack.trim().toLowerCase():'';
+    let packVal=(localStorage.getItem('hermes-skin-pack')||'').trim().toLowerCase();
+    if(!packVal&&srvPackVal) packVal=srvPackVal;
+    try{
+      if(typeof _fetchSkinPacks==='function') await _fetchSkinPacks();
+    }catch(_){
+      // fetch failed: keep whatever pack list is already loaded
+    }
+    if(!packVal){
+      // Migration mirror (the boot reconcile owns the corrective POST): a
+      // pre-unification builtin skin that now resolves to a pack adopts its
+      // pack key for display.
+      const legacySkin=(settings.skin||'').trim().toLowerCase();
+      if(legacySkin&&legacySkin!=='default'&&typeof _findSkinPack==='function'&&_findSkinPack(legacySkin)) packVal=legacySkin;
+    }
+    const activePack=(packVal&&typeof _findSkinPack==='function')?_findSkinPack(packVal):null;
+    const skinVal=(activePack&&activePack.applyMode==='css-key')?String(activePack.key).toLowerCase():'default';
     const skinSel=$('settingsSkin');
     if(skinSel) skinSel.value=skinVal;
-    if(typeof _buildSkinPicker==='function') _buildSkinPicker(skinVal);
+    const packHiddenInput=$('settingsSkinPack');
+    if(packHiddenInput) packHiddenInput.value=packVal;
+    if(typeof _buildSkinPicker==='function') _buildSkinPicker();
+    if(typeof _syncSkinPackSettingsUi==='function') _syncSkinPackSettingsUi();
     const fontSizeVal=settings.font_size||localStorage.getItem('hermes-font-size')||'default';
     localStorage.setItem('hermes-font-size',fontSizeVal);
     if(typeof _applyFontSize==='function') _applyFontSize(fontSizeVal);
@@ -9781,6 +10172,11 @@ async function loadSettingsPanel(){
       langSel.value=resolvedLanguage;
       langSel.addEventListener('change',function(){
         if(typeof setLocale==='function'){setLocale(this.value);if(typeof applyLocaleToDOM==='function')applyLocaleToDOM();}
+        // Pack manifests localize per the active locale — re-render the
+        // tweak panel + script chip and rebuild the unified picker so pack
+        // names/labels follow the live language switch.
+        if(typeof _syncSkinPackSettingsUi==='function') _syncSkinPackSettingsUi();
+        if(typeof _buildSkinPicker==='function') _buildSkinPicker();
         _schedulePreferencesAutosave();
       },{once:false});
     }
