@@ -153,14 +153,44 @@ that slice.
   the real app stylesheet.
 - [`docs/ui-ux/two-stage-proposal.html`](ui-ux/two-stage-proposal.html):
   existing two-stage chat UX proposal for issue #536.
-- [`THEMES.md`](../THEMES.md): theme and skin guidance; the core palette
-  variable contract lives in `static/style.css`.
+- [`THEMES.md`](../THEMES.md): theme, skin, and skin-pack guidance; the core
+  palette variable contract lives in `static/style.css`.
 
 Current appearance has a theme axis (`light`, `dark`, `system`) and a separate
 skin axis (`default`, `ares`, `mono`, `slate`, `poseidon`, `sisyphus`,
 `charizard`, `sienna`, `catppuccin`, `nous`, `geist-contrast`) in
 `static/boot.js` and `static/style.css`. Do not follow stale `data-theme`-only theme guidance unless
 the current code and tests prove that model still applies.
+
+A third, orthogonal axis selects a **skin pack**: a validated `manifest.json`
+directory discovered from `static/skins/` (builtin root) and `$HERMES_HOME/skins/`
+(user root, a same-key user pack shadows the builtin). `api/skinpacks.py` owns
+discovery, manifest validation, setting sanitization, and sandboxed asset
+serving; `GET /api/skins` lists packs with metadata, manifests, and per-pack
+`assetsBase`, and `GET /api/skins/<key>/assets/<rel>` serves pack files with
+mutable-user-file semantics (`Cache-Control: no-cache` + ETag/304, deliberately
+not the `?v=` immutable fingerprint). Selection persists in the `skin_pack`
+(`""` = no pack), `skin_tweaks`, and `skin_script_consents` settings keys. A pack
+applies as `data-skin="pack:<key>"`; it must never read or extend the builtin
+`skin` allowlists. Security boundary: packs are declarative by default, and a
+pack's `scripts` load only behind explicit per-pack user consent persisted in
+`skin_script_consents`; the `icons` and `thinking` manifest fields are
+schema-accepted but inert until batch 2.
+
+Batch 3 (skin-system unification) extends that contract: the optional manifest
+field `applyMode` (`pack`, the default, or `css-key`) selects how the frontend
+applies a pack — a `css-key` pack's styling already ships in `static/style.css`
+keyed by `:root[data-skin="<key>"]` and is applied as the bare
+`data-skin="<key>"`. The server validates the enum only and never
+key-restricts it. One generated `css-key` manifest per builtin accent skin
+(every `_SKINS` entry in `static/boot.js` except `default`) lives under
+`static/skins/<key>/`, owned by `scripts/gen_builtin_skin_packs.py`
+(regenerate, do not hand-edit; `aurora` is the only hand-authored builtin).
+The text fields `name`, `description`, `tweaks[].label`, and
+`tweaks[].options[].label` additionally accept localized objects
+(`{"<locale>": "<text>"}`, 1–8 entries); the raw form is preserved for the
+frontend to resolve per locale, invalid entries drop individually, and an
+emptied object falls back to the field's absence behaviour.
 
 For UI or UX work, include before/after evidence, verify relevant responsive
 states, and prefer stable class/data hooks over one-off visual behavior.

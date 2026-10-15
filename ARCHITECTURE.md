@@ -65,6 +65,7 @@ actions. The topbar remains focused on conversation context and the workspace/fi
       profiles.py          Profile state management, hermes_cli wrapper
       onboarding.py        First-run onboarding status, real provider config writes, OAuth linking, readiness detection
       routes.py            All GET + POST route handlers (if/elif dispatch, no decorators)
+      skinpacks.py         Skin pack discovery, manifest validation, setting sanitizers, sandboxed asset serving
       startup.py           Startup helpers: auto_install_agent_deps()
       state_sync.py        state.db bridge — opt-in /insights usage/title sync; always mirrors the session workspace into sessions.cwd
       streaming.py         SSE engine, run_agent, cancel, compression, HERMES_HOME save/restore
@@ -1780,6 +1781,19 @@ Complete list of all HTTP endpoints as of Sprint 1 (v0.3).
     /api/file/raw              ?session_id=X&path=P -> raw file bytes with correct MIME type.
                                Used for image preview. Path traversal protected via safe_resolve.
                                Returns 404 JSON if file not found.
+    /api/skins                 Skin pack catalog. {"packs": [{key, name, version, author,
+                               description, origin, shadows, scheme, preview, palette,
+                               extraCss, scripts, tweaks, assetsBase}, ...]}. Discovery
+                               and manifest validation in api/skinpacks.py: builtin root
+                               static/skins/ plus user root $HERMES_HOME/skins/, where a
+                               same-key user pack shadows the builtin.
+    /api/skins/<key>/assets/<rel>
+                               Sandboxed pack asset (css/js/image/font subpath of the pack
+                               directory; containment re-checked after unquote). Sent with
+                               Cache-Control: no-cache + weak ETag/304 revalidation: pack
+                               files are mutable user data, so the ?v= immutable-asset
+                               fingerprint is deliberately not used. JSON 404 on unknown
+                               key, bad rel, or read failure.
 
 ### POST Endpoints
 

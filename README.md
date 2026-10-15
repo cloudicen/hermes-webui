@@ -287,6 +287,10 @@ If an AI assistant is helping with install, reinstall, bootstrap, provider setup
 - Appearance is split into two axes: Theme (`system`, `dark`, `light`) and Skin
   (`default`, `ares`, `mono`, `slate`, `poseidon`, `sisyphus`, `charizard`,
   `sienna`, `catppuccin`, `nous`, `geist-contrast` / Geist Contrast)
+- A third, orthogonal axis selects skin packs: drop-in resource packs layering a
+  palette plus tweakable options on top of the built-in skins, discovered from
+  the shipped example under `static/skins/aurora/` and user packs under
+  `.hermes/skins/`
 - Switch via Settings -> Appearance (instant live preview) or `/theme <theme-or-skin>`
 - Persists across reloads (server-side in settings.json + localStorage for flicker-free loading)
 - Skins use `data-skin` plus CSS variables; dark mode resolves through the
