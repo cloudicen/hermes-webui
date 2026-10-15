@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "nous",
+  "name": "Nous",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Nous — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#4682B4",
+      "#3A6E9A",
+      "#2C5F88"
+    ]
+  }
+}

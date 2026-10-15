@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "mono",
+  "name": "Mono",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Mono — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#CCCCCC",
+      "#999999",
+      "#666666"
+    ]
+  }
+}

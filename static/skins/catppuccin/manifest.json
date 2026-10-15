@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "catppuccin",
+  "name": "Catppuccin",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Catppuccin — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#CBA6F7",
+      "#B4BEFE",
+      "#8839EF"
+    ]
+  }
+}

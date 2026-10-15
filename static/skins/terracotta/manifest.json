@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "terracotta",
+  "name": "Terracotta",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Terracotta — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#D97757",
+      "#F0EEE6",
+      "#141413"
+    ]
+  }
+}

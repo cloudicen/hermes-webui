@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "poseidon",
+  "name": "Poseidon",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Poseidon — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#0EA5E9",
+      "#0284C7",
+      "#0369A1"
+    ]
+  }
+}

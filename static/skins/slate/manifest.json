@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "slate",
+  "name": "Slate",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Slate — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#334155",
+      "#475569",
+      "#64748b"
+    ]
+  }
+}

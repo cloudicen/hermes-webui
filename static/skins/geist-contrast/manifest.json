@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "geist-contrast",
+  "name": "Geist Contrast",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Geist Contrast — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#000000",
+      "#ffffff",
+      "#FFF175"
+    ]
+  }
+}

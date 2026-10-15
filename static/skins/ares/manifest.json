@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "ares",
+  "name": "Ares",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Ares — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#FF4444",
+      "#CC3333",
+      "#992222"
+    ]
+  }
+}

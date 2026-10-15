@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "verdigris",
+  "name": "Verdigris",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Verdigris — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#C89A5A",
+      "#0F1714",
+      "#22342C"
+    ]
+  }
+}

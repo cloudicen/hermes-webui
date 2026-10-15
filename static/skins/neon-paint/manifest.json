@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "neon-paint",
+  "name": "Neon Paint",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Neon Paint — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#FF2D95",
+      "#00E5FF",
+      "#FFB800"
+    ]
+  }
+}

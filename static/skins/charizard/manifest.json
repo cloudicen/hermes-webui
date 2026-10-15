@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "charizard",
+  "name": "Charizard",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Charizard — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#FB923C",
+      "#F97316",
+      "#EA580C"
+    ]
+  }
+}

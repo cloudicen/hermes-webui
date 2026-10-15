@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "codex",
+  "name": "Codex",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Codex — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#72B39A",
+      "#242624",
+      "#ECEBE4"
+    ]
+  }
+}

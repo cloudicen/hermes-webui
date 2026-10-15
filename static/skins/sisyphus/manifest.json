@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "sisyphus",
+  "name": "Sisyphus",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Sisyphus — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#A78BFA",
+      "#8B5CF6",
+      "#7C3AED"
+    ]
+  }
+}

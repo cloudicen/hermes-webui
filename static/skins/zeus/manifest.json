@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "zeus",
+  "name": "Zeus",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Zeus — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#FFD700",
+      "#FFBF00",
+      "#1A1A00"
+    ]
+  }
+}

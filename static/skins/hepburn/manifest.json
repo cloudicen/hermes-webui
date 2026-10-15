@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "hepburn",
+  "name": "Hepburn",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Hepburn — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#c6246a",
+      "#ec5597",
+      "#f2abca"
+    ]
+  }
+}

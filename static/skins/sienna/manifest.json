@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "key": "sienna",
+  "name": "Sienna",
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Sienna — built-in accent skin (now a skin pack)",
+  "scheme": "auto",
+  "applyMode": "css-key",
+  "preview": {
+    "colors": [
+      "#D97757",
+      "#C06A49",
+      "#9A523A"
+    ]
+  }
+}
