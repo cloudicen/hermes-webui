@@ -14449,6 +14449,110 @@ def _handle_health_restart(handler) -> bool:
     )
 
 
+# ── Skin-pack icon replacement (skin-pack feature, batch 2) ─────────────────
+# The active pack's icons replace the stock favicon/manifest entries. These
+# surfaces serve PRE-AUTH traffic (/, /manifest.json, /favicon.ico), so the
+# active-pack resolution is fail-safe: any settings or discovery error
+# resolves to "no pack" and the stock assets are served unchanged.
+
+# (stock manifest icon src, icons key in the pack manifest). Entries are
+# replaced BY MATCHING their original src value, so anything the map does
+# not name — or a future manifest with different srcs — stays stock; the
+# shortcut icons share the favicon-192 src and are replaced naturally.
+_MANIFEST_STOCK_ICON_SRCS = (
+    ("static/favicon.svg", "favicon"),
+    ("static/favicon-32.png", "favicon32"),
+    ("static/favicon-192.png", "favicon192"),
+    ("static/favicon-512.png", "favicon512"),
+)
+
+# (stock <link> href in the rendered shell, icons key). count=1 each — the
+# shell carries one <link> per icon.
+_SHELL_STOCK_ICON_HREFS = (
+    ('href="static/favicon.svg"', "favicon"),
+    ('href="static/favicon-32.png"', "favicon32"),
+    ('href="static/apple-touch-icon.png"', "appleTouch"),
+)
+
+
+def _active_skin_pack_and_packs() -> tuple[dict | None, dict]:
+    """(active pack or None, discovered packs) for the icon surfaces."""
+    try:
+        from api import skinpacks
+        from api.config import load_settings
+
+        packs = skinpacks.discover_skin_packs()
+        return skinpacks.active_skin_pack(load_settings(), packs), packs
+    except Exception:
+        logger.warning("Active skin pack resolution failed; serving stock assets")
+        return None, {}
+
+
+def _replace_manifest_icon_srcs(data: bytes, pack: dict) -> bytes:
+    """Rewrite the stock manifest icon srcs to the active pack's asset URLs.
+
+    Fail-open: any parse or shape error returns the stock manifest bytes
+    unchanged."""
+    try:
+        manifest = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return data
+    if not isinstance(manifest, dict):
+        return data
+    icons = pack.get("icons") or {}
+    icon_lists = []
+    if isinstance(manifest.get("icons"), list):
+        icon_lists.append(manifest["icons"])
+    shortcuts = manifest.get("shortcuts")
+    if isinstance(shortcuts, list):
+        icon_lists.extend(
+            shortcut.get("icons")
+            for shortcut in shortcuts
+            if isinstance(shortcut, dict) and isinstance(shortcut.get("icons"), list)
+        )
+    replaced = False
+    for icon_list in icon_lists:
+        for icon in icon_list:
+            if not isinstance(icon, dict):
+                continue
+            for stock_src, icons_key in _MANIFEST_STOCK_ICON_SRCS:
+                if icon.get("src") == stock_src and icons_key in icons:
+                    icon["src"] = "/api/skins/{}/assets/{}".format(
+                        pack["key"], icons[icons_key]
+                    )
+                    replaced = True
+    if not replaced:
+        return data
+    return (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _apply_skin_pack_icon_links(html: str, pack: dict) -> str:
+    """Rewrite the stock icon <link> hrefs in the rendered app shell to the
+    active pack's asset URLs. Hrefs that don't match a stock value stay
+    unchanged. Applied per request (never inside the cached shell base) so a
+    settings-time pack switch takes effect without a redeploy."""
+    icons = pack.get("icons") or {}
+    for stock_href, icons_key in _SHELL_STOCK_ICON_HREFS:
+        rel = icons.get(icons_key)
+        if rel:
+            html = html.replace(
+                stock_href,
+                'href="/api/skins/{}/assets/{}"'.format(pack["key"], rel),
+                1,
+            )
+    return html
+
+
+def _skin_pack_manifest_bytes(data: bytes) -> bytes:
+    """The manifest bytes with the active pack's icon srcs rewritten; the
+    stock bytes are returned unchanged when no pack is active, the pack
+    declares no icons, or anything fails."""
+    pack, _packs = _active_skin_pack_and_packs()
+    if pack is None or not pack.get("icons"):
+        return data
+    return _replace_manifest_icon_srcs(data, pack)
+
+
 def _serve_manifest(handler) -> bool:
     """Serve static/manifest.json with the correct PWA Content-Type.
 
@@ -14460,7 +14564,7 @@ def _serve_manifest(handler) -> bool:
     static_root = api_config.get_static_root()
     manifest_path = (static_root / "manifest.json").resolve()
     if manifest_path.exists():
-        data = manifest_path.read_bytes()
+        data = _skin_pack_manifest_bytes(manifest_path.read_bytes())
         handler.send_response(200)
         handler.send_header("Content-Type", "application/manifest+json; charset=utf-8")
         handler.send_header("Cache-Control", "no-store")
@@ -15248,9 +15352,15 @@ def handle_get(handler, parsed) -> bool:
 
             extra_img_src = _csp_extra_img_src()
             handler._csp_extra_img_src_preset = extra_img_src
+            html = _render_index_shell_base()
+            # Skin-pack icon links are applied per request (like the CSRF
+            # token), never inside the cached shell base — the active pack
+            # can change at settings time without a redeploy.
+            pack, _packs = _active_skin_pack_and_packs()
+            if pack is not None and pack.get("icons"):
+                html = _apply_skin_pack_icon_links(html, pack)
             html = (
-                _render_index_shell_base()
-                .replace("__CSRF_TOKEN_JSON__", json.dumps(csrf_token))
+                html.replace("__CSRF_TOKEN_JSON__", json.dumps(csrf_token))
                 .replace(
                     "__CSP_IMG_EXTRA_JSON__",
                     json.dumps(csp_img_extra_sources(extra_img_src)).replace("<", "\\u003c"),
@@ -15493,6 +15603,29 @@ def handle_get(handler, parsed) -> bool:
         return j(handler, {"error": "not found"}, status=404)
 
     if parsed.path == "/favicon.ico":
+        # Active pack favicon.ico wins (resolved through the same sandboxed
+        # resolution as serve_pack_asset); any miss falls back to stock.
+        pack, packs = _active_skin_pack_and_packs()
+        pack_ico = None
+        if pack is not None:
+            ico_rel = (pack.get("icons") or {}).get("faviconIco")
+            if ico_rel:
+                from api import skinpacks
+
+                resolved = skinpacks.resolve_pack_asset(packs, pack["key"], ico_rel)
+                if resolved is not None:
+                    try:
+                        pack_ico = resolved[0].read_bytes()
+                    except OSError:
+                        pack_ico = None
+        if pack_ico is not None:
+            handler.send_response(200)
+            handler.send_header("Content-Type", "image/x-icon")
+            handler.send_header("Content-Length", str(len(pack_ico)))
+            handler.send_header("Cache-Control", "public, max-age=86400")
+            handler.end_headers()
+            handler.wfile.write(pack_ico)
+            return True
         static_root = api_config.get_static_root()
         ico_path = (static_root / "favicon.ico").resolve()
         if ico_path.exists() and ico_path.is_file():
@@ -15804,6 +15937,67 @@ def handle_get(handler, parsed) -> bool:
         from api.extensions import get_extension_registry
 
         return j(handler, get_extension_registry())
+
+    # ── Skin packs (skin-pack feature, W3): listing + sandboxed assets ──
+    if parsed.path == "/api/skins":
+        from api import skinpacks
+
+        # Explicit field projection: the discovered pack dict also carries the
+        # on-disk "dir" (a Path) which is neither serializable nor safe to
+        # expose — never pass the raw pack through.
+        packs = skinpacks.discover_skin_packs()
+        listing = [
+            {
+                "key": pack["key"],
+                "name": pack["name"],
+                "version": pack["version"],
+                "author": pack["author"],
+                "description": pack["description"],
+                "origin": pack["origin"],
+                "shadows": pack["shadows"],
+                "scheme": pack["scheme"],
+                "applyMode": pack.get("applyMode") or "pack",
+                "preview": pack["preview"],
+                "palette": pack["palette"],
+                "extraCss": pack["extraCss"],
+                "scripts": pack["scripts"],
+                "tweaks": pack["tweaks"],
+                "icons": pack.get("icons") or {},
+                "thinking": pack.get("thinking") or {},
+                "assetsBase": "/api/skins/{}/assets/".format(pack["key"]),
+            }
+            for pack in packs.values()
+        ]
+        return j(handler, {"packs": listing})
+
+    if parsed.path.startswith("/api/skins/"):
+        from api import skinpacks
+
+        # Mirror serve_extension_static: unquote the remainder, then split
+        # "<key>/assets/<rel>". resolve_pack_asset() re-sandboxes the decoded
+        # subpath (no '..'/dotfile segments, resolve()+relative_to containment),
+        # so decoding before splitting cannot escape the pack directory.
+        rest = unquote(parsed.path[len("/api/skins/"):])
+        marker = rest.find("/assets/")
+        if marker > 0 and re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,31}$", rest[:marker]):
+            key = rest[:marker]
+            rel = rest[marker + len("/assets/"):]
+            # serve_pack_asset always returns True (file response or 404); a
+            # hypothetical False falls through to the dispatcher's 404.
+            return skinpacks.serve_pack_asset(
+                handler, skinpacks.discover_skin_packs(), key, rel
+            )
+        # batch 4 uploads: "<key>/uploads/<file>" — the file must be a
+        # server-generated sha256 name; serve_skin_upload re-sandboxes it
+        # under the pack's upload root and 404s on any mismatch.
+        uploads_marker = rest.find("/uploads/")
+        if uploads_marker > 0 and re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,31}$", rest[:uploads_marker]):
+            return skinpacks.serve_skin_upload(
+                handler,
+                rest[:uploads_marker],
+                rest[uploads_marker + len("/uploads/"):],
+            )
+        return j(handler, {"error": "not found"}, status=404)
 
     if parsed.path.startswith("/extensions/"):
         from api.extensions import serve_extension_static
@@ -16933,6 +17127,31 @@ def handle_post(handler, parsed) -> bool:
         return handle_upload_extract(handler)
     if parsed.path == "/api/workspace/upload":
         return handle_workspace_upload(handler)
+
+    # ── Skin pack image-tweak uploads (batch 4): raw image bytes, so it runs
+    # before the JSON read_body below, in the same auth/CSRF-gated position
+    # as every other POST (the gate at the top of handle_post). An invalid
+    # key answers 404 without reading the body, so the unread bytes must not
+    # poison a pooled keep-alive connection — arm close, mirroring the
+    # deprecated-ack reject-before-read above.
+    if parsed.path.startswith("/api/skins/") and parsed.path.endswith("/upload"):
+        upload_key = parsed.path[len("/api/skins/"):-len("/upload")]
+        if re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,31}$", upload_key) is None:
+            arm_connection_close_if_body_pending(handler)
+            return j(handler, {"error": "not found"}, status=404)
+        from api import skinpacks
+
+        content_type = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        try:
+            data = _read_body_bytes(handler)
+        except ValueError as exc:
+            status = 413 if "too large" in str(exc).lower() else 400
+            return bad(handler, str(exc), status=status)
+        filename, reason = skinpacks.save_skin_pack_upload(upload_key, data, content_type)
+        if filename is None:
+            status = 413 if reason and "too large" in reason.lower() else 400
+            return bad(handler, reason or "upload rejected", status=status)
+        return j(handler, {"file": filename})
 
     if parsed.path == "/api/transcribe":
         return handle_transcribe(handler)
