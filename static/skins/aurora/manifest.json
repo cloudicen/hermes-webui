@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "key": "aurora",
+  "name": {
+    "en": "Aurora",
+    "zh": "极光"
+  },
+  "version": "1.0.0",
+  "author": "Hermes WebUI",
+  "description": "Cool cyan/teal accent family with a soft ambient glow. Reference pack: full light + dark palettes, all four tweak types, script-free.",
+  "scheme": "auto",
+  "preview": {
+    "colors": [
+      "#22d3ee",
+      "#2dd4bf",
+      "#0e7490"
+    ]
+  },
+  "palette": {
+    "light": {
+      "accent": "#0e7490",
+      "accent-hover": "#155e75",
+      "accent-bg": "rgba(14, 116, 144, 0.08)",
+      "accent-bg-strong": "rgba(14, 116, 144, 0.15)",
+      "accent-text": "#155e75",
+      "accent2": "#0d9488",
+      "accent3": "#0891b2",
+      "accent-contrast": "#ffffff",
+      "accent-rgb": "14, 116, 144",
+      "pack-glow": "#67e8f9",
+      "pack-glow-strength": "40%",
+      "pack-accent-tone": "cyan"
+    },
+    "dark": {
+      "accent": "#22d3ee",
+      "accent-hover": "#06b6d4",
+      "accent-bg": "rgba(34, 211, 238, 0.08)",
+      "accent-bg-strong": "rgba(34, 211, 238, 0.16)",
+      "accent-text": "#67e8f9",
+      "accent2": "#2dd4bf",
+      "accent3": "#06b6d4",
+      "accent-contrast": "#082f38",
+      "accent-rgb": "34, 211, 238",
+      "pack-glow": "#22d3ee",
+      "pack-glow-strength": "40%",
+      "pack-accent-tone": "cyan"
+    }
+  },
+  "extraCss": "theme.css",
+  "tweaks": [
+    {
+      "id": "glow-strength",
+      "label": {
+        "en": "Glow strength",
+        "zh": "发光强度"
+      },
+      "type": "range",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "default": 40,
+      "apply": {
+        "var": "pack-glow-strength",
+        "template": "{value}%"
+      }
+    },
+    {
+      "id": "accent-tone",
+      "label": {
+        "en": "Accent tone",
+        "zh": "强调色调"
+      },
+      "type": "select",
+      "options": [
+        {
+          "value": "cyan",
+          "label": {
+            "en": "Cyan",
+            "zh": "青色"
+          }
+        },
+        {
+          "value": "teal",
+          "label": {
+            "en": "Teal",
+            "zh": "水鸭色"
+          }
+        }
+      ],
+      "default": "cyan",
+      "apply": {
+        "var": "pack-accent-tone"
+      }
+    },
+    {
+      "id": "compact-chips",
+      "label": {
+        "en": "Compact chips",
+        "zh": "紧凑芯片"
+      },
+      "type": "toggle",
+      "default": false,
+      "apply": {
+        "class": "pack-compact"
+      }
+    },
+    {
+      "id": "accent-color",
+      "label": {
+        "en": "Accent color",
+        "zh": "强调色"
+      },
+      "type": "color",
+      "default": "#0e7490",
+      "apply": {
+        "var": "accent"
+      }
+    },
+    {
+      "id": "corner-image",
+      "label": {
+        "en": "Corner image",
+        "zh": "角落图片"
+      },
+      "type": "image",
+      "apply": {
+        "var": "pack-corner-image"
+      }
+    }
+  ],
+  "icons": {
+    "favicon": "icons/logo-192.png",
+    "favicon32": "icons/logo-32.png",
+    "favicon192": "icons/logo-192.png",
+    "favicon512": "icons/logo-512.png",
+    "appleTouch": "icons/logo-512.png",
+    "faviconIco": "icons/favicon.ico",
+    "logoSvg": "icons/logo-512.png"
+  },
+  "thinking": {
+    "mode": "gif",
+    "gif": "anim/thinking.gif",
+    "size": 28
+  }
+}

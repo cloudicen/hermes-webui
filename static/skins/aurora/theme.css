@@ -1,0 +1,58 @@
+/* ── Aurora — builtin example skin pack ─────────────────────────────────────
+   Selected through the skin_pack setting and applied as
+   data-skin="pack:aurora" on top of any builtin skin. The manifest palette
+   lands as custom properties; the four pack tweaks override the pack-*
+   defaults at runtime:
+
+     glow-strength  range   → --pack-glow-strength   (e.g. "40%")
+     accent-tone    select  → --pack-accent-tone     (cyan | teal)
+     compact-chips  toggle  → html.pack-compact
+     accent-color   color   → --accent
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Focus chrome follows the selected tone; the glow strength scales the wash. */
+:root[data-skin="pack:aurora"]{--focus-ring:color-mix(in srgb,var(--pack-accent-tone) 45%,transparent);--focus-glow:color-mix(in srgb,var(--pack-glow) calc(var(--pack-glow-strength) / 5),transparent);}
+:root.dark[data-skin="pack:aurora"]{--focus-ring:color-mix(in srgb,var(--pack-accent-tone) 38%,transparent);--focus-glow:color-mix(in srgb,var(--pack-glow) calc(var(--pack-glow-strength) / 6),transparent);}
+
+/* Ambient aurora glow behind the composer, scaled by the glow-strength tweak. */
+:root[data-skin="pack:aurora"] .composer-box{box-shadow:0 0 22px color-mix(in srgb,var(--pack-glow) calc(var(--pack-glow-strength) / 4),transparent);}
+:root.dark[data-skin="pack:aurora"] .composer-box{box-shadow:0 0 30px color-mix(in srgb,var(--pack-glow) calc(var(--pack-glow-strength) / 3),transparent);}
+:root[data-skin="pack:aurora"] .composer-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent),0 0 26px color-mix(in srgb,var(--pack-glow) calc(var(--pack-glow-strength) / 3),transparent);}
+
+/* Active session rows and the model chip pick up the selected tone. */
+:root[data-skin="pack:aurora"] .session-item.active{background:color-mix(in srgb,var(--pack-accent-tone) 10%,transparent);border-color:color-mix(in srgb,var(--pack-accent-tone) 22%,transparent);}
+:root.dark[data-skin="pack:aurora"] .session-item.active{background:color-mix(in srgb,var(--pack-accent-tone) 12%,transparent);border-color:color-mix(in srgb,var(--pack-accent-tone) 25%,transparent);}
+:root[data-skin="pack:aurora"] .session-item.active .session-title{color:color-mix(in srgb,var(--pack-accent-tone) 80%,var(--text));}
+:root[data-skin="pack:aurora"] .chip.model{background:color-mix(in srgb,var(--accent) 10%,transparent);border-color:color-mix(in srgb,var(--accent) 24%,transparent);color:var(--accent-text);}
+
+/* Suggestions lean toward the tone on hover. */
+:root[data-skin="pack:aurora"] .suggestion:hover{background:color-mix(in srgb,var(--pack-accent-tone) 8%,transparent);border-color:color-mix(in srgb,var(--pack-accent-tone) 20%,transparent);}
+:root.dark[data-skin="pack:aurora"] .suggestion:hover{background:color-mix(in srgb,var(--pack-accent-tone) 10%,transparent);}
+
+/* Quiet aurora wash over the chat area, scaled by the glow-strength tweak. */
+:root[data-skin="pack:aurora"] .chat{background:radial-gradient(1200px 400px at 50% -10%,color-mix(in srgb,var(--pack-glow) calc(var(--pack-glow-strength) / 12),transparent),transparent);}
+:root.dark[data-skin="pack:aurora"] .chat{background:radial-gradient(1200px 440px at 50% -10%,color-mix(in srgb,var(--pack-glow) calc(var(--pack-glow-strength) / 10),transparent),transparent);}
+
+/* Inline code and the top bar pick up a trace of the tone. */
+:root[data-skin="pack:aurora"] .msg-body code{background:color-mix(in srgb,var(--pack-accent-tone) 9%,transparent);}
+:root.dark[data-skin="pack:aurora"] .msg-body code{background:color-mix(in srgb,var(--pack-accent-tone) 12%,transparent);}
+:root[data-skin="pack:aurora"] .topbar{box-shadow:0 1px 0 color-mix(in srgb,var(--pack-glow) 22%,transparent);}
+
+/* Compact density (compact-chips toggle → html.pack-compact). */
+html.pack-compact[data-skin="pack:aurora"] .chip{font-size:10px;padding:2px 8px;}
+html.pack-compact[data-skin="pack:aurora"] .session-item{padding-top:4px;padding-bottom:4px;}
+html.pack-compact[data-skin="pack:aurora"] .session-item .session-meta{font-size:10px;}
+html.pack-compact[data-skin="pack:aurora"] .suggestion{padding:8px 12px;font-size:12px;}
+
+/* Corner image (corner-image image tweak → --pack-corner-image): a ~120px
+   decorative mark pinned to the bottom-right of the chat area (above the
+   composer, clear of the scroll-to-bottom button), inert to pointer events.
+   With no upload stored the token is absent and `none` paints nothing.
+   z-index 5 sits above the chat background (z-index 0) and below the
+   scroll button (10) and every modal/dropdown layer (1000+). */
+:root[data-skin="pack:aurora"] .messages-shell::after{
+  content:'';position:absolute;right:16px;bottom:60px;width:120px;height:120px;
+  background:var(--pack-corner-image,none) center / contain no-repeat;
+  opacity:.85;pointer-events:none;z-index:5;
+}
+:root.dark[data-skin="pack:aurora"] .messages-shell::after{opacity:.7;}
