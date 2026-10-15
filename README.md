@@ -685,6 +685,12 @@ Production data and real cron jobs are never touched. Current snapshot:
 **~11,500 tests collected** across **~1,150 test files**, run in CI on Python 3.11,
 3.12, and 3.13 (3 parallel shards each).
 
+Contributors who prefer local gates to waiting on CI can install the repo git
+hooks with `./scripts/install-hooks.sh` (the same lint surface on `commit`, the
+full sharded suite on `push`), and build/push the Docker image with
+`scripts/release-docker.sh` (a local registry by default). See
+[TESTING.md](TESTING.md) → Local CI/CD.
+
 ---
 
 ## Architecture
@@ -781,6 +787,7 @@ The WebUI is still coupled to Hermes Agent internals for runtime execution, prov
 
 **Contributing & design**
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution style, PR expectations, and local verification
+- [`docs/dev-workflow-zh.md`](docs/dev-workflow-zh.md) — 本地开发工作流中文速查（修改→验证→提交→部署；本地 CI/CD hooks、gateway 守护、镜像发布）
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — system design, all API endpoints, implementation notes
 - [`TESTING.md`](TESTING.md) — manual browser test plan and automated coverage reference
 - [`DESIGN.md`](DESIGN.md) — design tokens and the calm-console direction

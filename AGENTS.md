@@ -17,6 +17,13 @@ unrelated work. Keep subsystem-specific safety and contract requirements below.
 - `CHANGELOG.md` for release-history questions; ordinary PRs do not edit it
 - `ARCHITECTURE.md` for design constraints and current module layout
 - `TESTING.md` for local verification commands and relevant manual checks
+- `docs/dev-workflow-zh.md` for the local dev workflow in Chinese (modify →
+  verify → commit → deploy): the in-repo `HERMES_HOME` layout (`.hermes/`),
+  the chat-enabled dev server (`scripts/dev-server.sh`, port 8787), the
+  resident gateway daemon (`scripts/gateway-daemon.sh`, cron scheduling),
+  the agent bootstrap script (`scripts/setup-agent-local.sh`), local CI/CD
+  git hooks, the optional image release script (`scripts/release-docker.sh`),
+  and the repo commit conventions (bilingual messages, atomic history — §4)
 - `docs/onboarding.md` for first-run onboarding behavior
 - `docs/troubleshooting.md` for diagnostic flows
 - `docs/rfcs/README.md` for larger RFCs and state/durability contracts

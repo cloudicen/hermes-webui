@@ -84,6 +84,13 @@ unsupported system interpreters during collection:
 
 CI also runs this suite on Python `3.11`, `3.12`, and `3.13`.
 
+If you would rather run the same gates locally before they reach CI, install the
+repo git hooks once with `./scripts/install-hooks.sh`: the lint surface runs on
+`commit` and the full sharded suite on `push`. See
+[TESTING.md → Local CI/CD](TESTING.md#local-cicd-git-hooks--docker-cd), which
+also covers `scripts/release-docker.sh` for building and pushing the image to a
+registry.
+
 If your change affects browser behavior, also run the relevant manual checks from [TESTING.md](TESTING.md).
 
 ### 3. Clear PR Description
@@ -220,6 +227,8 @@ Want the smoothest review?
 
 ## Development References
 
+- [docs/dev-workflow-zh.md](docs/dev-workflow-zh.md) — 中文速查：本地开发工作流
+  （修改→本地验证→提交→发布），含本地 CI/CD git hooks 与镜像发布脚本
 - [README.md](README.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [TESTING.md](TESTING.md)

@@ -186,6 +186,75 @@ without ruff aren't blocked, while CI (which installs ruff) enforces it. The
 diff-scoped gate runs as the `lint` job in `.github/workflows/tests.yml` and is
 also part of the maintainer pre-release pre-gate.
 
+## Local CI/CD (git hooks + Docker CD)
+
+Two local entry points mirror the upstream GitHub Actions jobs for contributors who
+run their own gates instead of waiting on CI.
+
+完整中文工作流（项目内 `HERMES_HOME` 布局、聊天开发实例 `scripts/dev-server.sh`、
+发布流程与已知坑）见 [dev-workflow-zh.md](dev-workflow-zh.md)。
+
+### Git hooks (`scripts/install-hooks.sh`)
+
+`./scripts/install-hooks.sh` sets `git config core.hooksPath scripts/ci` (per
+checkout, never global), makes the hooks executable, and runs
+`scripts/ci/pre-commit` once as a self-check. It writes `scripts/ci/env.local`
+(gitignored, per-machine) only when `scripts/test.sh` cannot auto-find a
+supported Python 3.11–3.13 on `PATH`; rerun it after changing your `PATH`.
+
+| Hook | Mirrors | Gates |
+|---|---|---|
+| `scripts/ci/pre-commit` | `tests.yml` `lint` job | whole-tree `compileall`; `scripts/ruff_lint.py --diff origin/master` (committed content); the same ruff gate over **staged** content (what CI only sees after the push); `npm run lint:runtime` + `scripts/scope_undef_gate.py` when a `static/**/*.js` file is staged |
+| `scripts/ci/pre-push` | `tests.yml` `test` job (+ browser smoke) | re-runs the cheap lint gates (so `--no-verify` cannot skip the lint surface), then the FULL pytest suite across `HERMES_WEBUI_TEST_SHARDS` parallel shards, then opt-in `tests/browser_smoke.py` |
+
+`pre-push` shard count defaults to `min(8, nproc)` **capped by available memory**
+(~2 GB RSS per full-suite shard; unconstrained sharding is OOM-killed and the
+shards then report exit 137). Each shard logs to its own file; a failure prints
+the log path plus the last 30 lines. A shard that legitimately collects nothing
+(count > tests) is treated as a pass, not a failure.
+
+Skip / tuning variables (shell env or `scripts/ci/env.local`):
+`HERMES_WEBUI_SKIP_HOOKS=1` (both hooks), `HERMES_WEBUI_SKIP_PY_LINT=1`,
+`HERMES_WEBUI_SKIP_JS=1`, `HERMES_WEBUI_SKIP_TESTS=1`,
+`HERMES_WEBUI_SKIP_BROWSER_SMOKE=1`, `HERMES_WEBUI_TEST_SHARDS=<int>`,
+`HERMES_WEBUI_PUSH_PYTEST_ARGS="..."` (focused runs),
+`HERMES_WEBUI_PUSH_BROWSER_SMOKE=1` (opts in: installs playwright + chromium).
+`git commit --no-verify` skips `pre-commit` only; `pre-push` re-runs its cheap
+gates by design. Uninstall: `git config --unset core.hooksPath`.
+
+Scope limits: the hooks use a single interpreter (the repo `.venv`), not CI's
+3.11/3.12/3.13 matrix; the ESLint gates require Node >= 20 (`eslint@^10`, same as
+CI) and fail closed with guidance on an older Node; `docker-smoke.yml`,
+`native-windows-startup.yml`, `docs-ci.yml`, and the release workflow have no
+local mirror.
+
+### Docker image + local registry (`scripts/release-docker.sh`)
+
+The image half of `.github/workflows/release.yml`, run from a checkout:
+
+```bash
+scripts/release-docker.sh --dry-run          # resolve + print the plan, no build/run/push
+scripts/release-docker.sh --ensure-registry  # bring up registry:2 on :5000 if needed, then build+push
+scripts/release-docker.sh --tag v0.52.1 --also-latest --platforms linux/amd64,linux/arm64
+scripts/release-docker.sh --image ghcr.io/<owner>/hermes-webui --tag v0.52.1
+```
+
+The default image is `localhost:5000/hermes-webui` (`--image` or
+`HERMES_DOCKER_IMAGE` overrides it); the default tag is the exact git tag on
+`HEAD`, else `local-<short SHA>`. The build passes
+`--build-arg HERMES_VERSION=<tag>` exactly like the upstream release job. The
+pre-build gates (`compileall` + the ruff diff gate) run unless `--skip-gates`;
+multi-platform needs buildx, and `--no-push` never contacts a registry.
+`--ensure-registry` only applies to `localhost`/`127.0.0.1`/`0.0.0.0` images.
+Moving an image to a remote registry later:
+
+```bash
+docker login <remote-registry>
+docker pull localhost:5000/hermes-webui:v0.52.1
+docker tag  localhost:5000/hermes-webui:v0.52.1 <remote-registry>/hermes-webui:v0.52.1
+docker push <remote-registry>/hermes-webui:v0.52.1
+```
+
 ## Automated browser smoke (runtime brick-class gate)
 
 The ESLint guard above catches `const`-reassign / import-assign statically. The
