@@ -13068,6 +13068,9 @@ _SETTINGS_DEFAULTS = {
     "theme": "dark",  # light | dark | system
     "skin": "default",  # accent color skin: default | ares | mono | graphite | slate | poseidon | sisyphus | charizard | sienna | catppuccin | nous
     "font_size": "default",  # small | default | large | xlarge
+    "skin_pack": "",  # selected skin pack key ("" = no pack); packs are separate from the builtin `skin` allowlist (_SETTINGS_SKIN_VALUES is deliberately not extended)
+    "skin_tweaks": {},  # pack key -> {tweak id -> value}, validated against discovered packs on load/save
+    "skin_script_consents": {},  # pack key -> bool consent for that pack's scripts
     "session_jump_buttons": False,  # show Start/End transcript jump pills
     "render_user_markdown": False,  # opt-in: render full markdown in user messages (#3870)
     "large_text_paste_as_attachment": True,  # convert very large composer text pastes into .md attachments by default
@@ -13343,6 +13346,28 @@ def load_settings() -> dict:
         stored.get("theme") if _has_stored_appearance else settings.get("theme"),
         stored.get("skin") if _has_stored_appearance else settings.get("skin"),
     )
+    # Skin packs (W2): normalize the RETURNED dict only — load never writes the
+    # file, mirroring the read-side appearance handling above. Settings loading
+    # must be unconditionally robust: a broken pack directory falls back to the
+    # no-pack defaults instead of raising.
+    try:
+        from api import skinpacks
+
+        packs = skinpacks.discover_skin_packs()
+        settings["skin_pack"] = skinpacks.normalize_skin_pack_setting(
+            settings.get("skin_pack"), packs
+        )
+        settings["skin_tweaks"] = skinpacks.normalize_skin_tweaks(
+            settings.get("skin_tweaks"), packs, dir_keys=skinpacks.pack_dir_keys()
+        )
+        settings["skin_script_consents"] = skinpacks.normalize_skin_script_consents(
+            settings.get("skin_script_consents"), packs
+        )
+    except Exception:
+        logger.warning("Skin pack normalization failed; using no-pack defaults")
+        settings["skin_pack"] = ""
+        settings["skin_tweaks"] = {}
+        settings["skin_script_consents"] = {}
     settings["default_model"] = get_effective_default_model()
     try:
         model_cfg = get_config().get("model", {})
@@ -13586,10 +13611,49 @@ def save_settings(settings: dict) -> dict:
             # polluted with non-bool/non-str junk from a crafted POST.
             current_dash.update({k: bool(v) for k, v in _dashboard_plugins.items() if isinstance(k, str)})
             current["dashboard_plugins"] = current_dash
+    # Skin packs (W2): resolve the discovered packs once for validating the
+    # pack settings below. A broken pack directory must never break saving:
+    # on failure the pack branches are skipped and the values already on disk
+    # are kept (restoring them from the raw file below, because load_settings()
+    # fell back to the no-pack defaults for this same failure — persisting that
+    # fallback would wipe the user's pack settings over a transient pack-dir
+    # error).
+    try:
+        from api import skinpacks as _skinpacks
+
+        _skin_packs = _skinpacks.discover_skin_packs()
+    except Exception:
+        logger.warning("Skin pack discovery failed during save; keeping stored pack settings")
+        _skinpacks = None
+        _skin_packs = {}
+        for _pack_key in ("skin_pack", "skin_tweaks", "skin_script_consents"):
+            if _pack_key in raw_settings:
+                current[_pack_key] = raw_settings[_pack_key]
+    # Deep-merge the per-pack tweak/consent maps, patterned on the
+    # dashboard_plugins branch above: a save carries the active pack's values,
+    # the merge preserves other packs' stored entries, and
+    # skinpacks.normalize_* drops unknown packs/tweak ids and invalid values.
+    if _skinpacks is not None:
+        _skin_tweaks = settings.get("skin_tweaks")
+        if isinstance(_skin_tweaks, dict):
+            _current_tweaks = current.get("skin_tweaks", {})
+            if isinstance(_current_tweaks, dict):
+                current["skin_tweaks"] = _skinpacks.normalize_skin_tweaks(
+                    {**_current_tweaks, **_skin_tweaks}, _skin_packs,
+                    dir_keys=_skinpacks.pack_dir_keys()
+                )
+        _skin_consents = settings.get("skin_script_consents")
+        if isinstance(_skin_consents, dict):
+            _current_consents = current.get("skin_script_consents", {})
+            if isinstance(_current_consents, dict):
+                current["skin_script_consents"] = _skinpacks.normalize_skin_script_consents(
+                    {**_current_consents, **_skin_consents}, _skin_packs
+                )
     for k, v in settings.items():
         key_is_speech = k in _SETTINGS_SPEECH_KEYS
-        # dashboard_plugins is deep-merged above (not a flat allowlisted scalar).
-        if k == "dashboard_plugins":
+        # dashboard_plugins and the skin-pack tweak/consent maps are deep-merged
+        # above (not flat allowlisted scalars).
+        if k in {"dashboard_plugins", "skin_tweaks", "skin_script_consents"}:
             continue
         if k in _SETTINGS_ALLOWED_KEYS:
             if k == "theme":
@@ -13601,6 +13665,19 @@ def save_settings(settings: dict) -> dict:
                 if isinstance(v, str) and v.strip():
                     pending_skin = v
                     skin_was_explicit = True
+                continue
+            if k == "skin_pack":
+                # Invariant: packs are selected through this separate skin_pack
+                # setting (applied in the DOM as pack:<key>); the builtin `skin`
+                # allowlist _SETTINGS_SKIN_VALUES is NOT extended by packs — the
+                # four hardcoded builtin skin lists are known-divergent by
+                # design. An unknown key normalizes to "" (no pack), matching
+                # how _normalize_appearance falls an invalid builtin skin back
+                # to its default.
+                if _skinpacks is not None:
+                    current["skin_pack"] = _skinpacks.normalize_skin_pack_setting(
+                        v, _skin_packs
+                    )
                 continue
             # Validate enum-constrained keys
             if k in _SETTINGS_ENUM_VALUES and v not in _SETTINGS_ENUM_VALUES[k]:
