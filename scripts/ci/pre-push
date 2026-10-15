@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+# pre-push — local mirror of the hermes-webui CI test surface (tests.yml "test"
+# job), plus a rerun of the cheap lint gates so `git commit --no-verify` cannot
+# skip the lint surface before a push.
+#
+#   a. ensure .venv + dev deps (./scripts/test.sh --version — idempotent)
+#   b. rerun compileall + ruff diff (the seconds-cheap pre-commit gates)
+#   c. FULL pytest gate, single interpreter (the .venv's), parallelized across
+#      N shards (HERMES_WEBUI_TEST_SHARDS, default min(8, nproc) capped by
+#      available memory — see mem_aware_shard_cap).
+#      Primary mode is native pytest-shard (--shard-id partition, like CI;
+#      verified working: pytest-shard 0.1.2 under pytest 9.1.1 partitions
+#      deterministically). If the shard plugin cannot load, falls back to
+#      FILE-LEVEL sharding: collect test files once, sort, split into N
+#      contiguous chunks, one pytest process per chunk.
+#   d. optional browser smoke (tests/browser_smoke.py) — opt-in via
+#      HERMES_WEBUI_PUSH_BROWSER_SMOKE=1; runs only after the tests pass.
+#
+# Skip/tuning controls: HERMES_WEBUI_SKIP_HOOKS, HERMES_WEBUI_SKIP_PY_LINT,
+# HERMES_WEBUI_SKIP_TESTS, HERMES_WEBUI_SKIP_BROWSER_SMOKE,
+# HERMES_WEBUI_TEST_SHARDS, HERMES_WEBUI_PUSH_PYTEST_ARGS,
+# HERMES_WEBUI_PUSH_BROWSER_SMOKE.
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+# Shard logs live in a mktemp -d and are trap-cleaned on exit — EXCEPT when a
+# shard fails, in which case they are kept: the failure report points at the
+# full log path, so the path must still exist for the developer to read.
+PREPUSH_TMP=""
+KEEP_PREPUSH_TMP=0
+cleanup() {
+  if [[ -n "$PREPUSH_TMP" && -d "$PREPUSH_TMP" ]]; then
+    if (( KEEP_PREPUSH_TMP )); then
+      printf 'INFO  keeping shard logs for inspection: %s\n' "$PREPUSH_TMP" >&2
+    else
+      rm -rf "$PREPUSH_TMP"
+    fi
+  fi
+}
+trap cleanup EXIT
+
+# --- shard-mode probe ---------------------------------------------------------------
+# `pytest --help` does NOT validate plugin args (verified: bogus flags exit 0
+# through --help), so probe by collecting an EMPTY directory with the shard
+# flags: with the plugin loaded the run parses fine and exits 5 ("no tests
+# collected"); without it, pytest exits 4 ("unrecognized arguments").
+pytest_shard_ok() {
+  local probe rc=0
+  probe="$(mktemp -d "${TMPDIR:-/tmp}/hermes-shardprobe.XXXXXX")" || return 1
+  "$VENV_PY" -m pytest --co -q --shard-id=0 --num-shards=1 "$probe" >/dev/null 2>&1 || rc=$?
+  rm -rf "$probe"
+  [[ "$rc" == "0" || "$rc" == "5" ]]
+}
+
+# Runs in background ($!): one pytest process, log to file, elapsed-time marker
+# appended so the per-shard summary can report each shard's own duration.
+run_shard() { # run_shard <logfile> <pytest args...>
+  local log="$1"
+  shift
+  local started=$SECONDS rc=0
+  "$VENV_PY" -m pytest "$@" >"$log" 2>&1 || rc=$?
+  printf '\n[shard-summary] exit=%s elapsed=%ss\n' "$rc" "$((SECONDS - started))" >>"$log"
+  return "$rc"
+}
+
+_shard_elapsed() { # _shard_elapsed <logfile>
+  sed -n 's/^\[shard-summary\] exit=[0-9]* elapsed=\([0-9]*s\)$/(\1)/p' "$1" | tail -n 1
+}
+
+# A full-suite shard peaks at ~2 GB RSS (measured: 8 concurrent shards were
+# OOM-killed with exit 137 on a 16 GB box). nproc alone over-subscribes RAM and
+# the OOM killer then reports shards as test failures, so the default is capped
+# by MemAvailable. HERMES_WEBUI_TEST_SHARDS still overrides.
+mem_available_mb() {
+  if [[ -r /proc/meminfo ]]; then
+    awk '/^MemAvailable:/ { print int($2 / 1024); exit }' /proc/meminfo 2>/dev/null
+  elif command -v free >/dev/null 2>&1; then
+    free -m 2>/dev/null | awk '/^Mem:/ { print $7; exit }'
+  fi
+}
+
+mem_aware_shard_cap() {
+  local avail cap
+  avail="$(mem_available_mb || true)"
+  if [[ ! "$avail" =~ ^[0-9]+$ ]]; then
+    printf '4\n'
+    return
+  fi
+  cap=$(( avail / 2048 ))
+  if (( cap < 1 )); then cap=1; fi
+  if (( cap > 8 )); then cap=8; fi
+  printf '%s\n' "$cap"
+}
+
+# --- the full pytest gate -------------------------------------------------------------
+run_test_gate() {
+  local n default_n requested="" avail cap
+  default_n="$(nproc 2>/dev/null || printf '1')"
+  if (( default_n > 8 )); then default_n=8; fi
+  cap="$(mem_aware_shard_cap)"
+  if (( cap < default_n )); then
+    avail="$(mem_available_mb || true)"
+    if (( default_n > 1 )); then
+      ci_info "test gate: shard default capped $default_n -> $cap by available memory (${avail:-?} MB; ~2048 MB per shard)."
+    fi
+    default_n="$cap"
+  fi
+  if (( default_n < 1 )); then default_n=1; fi
+
+  requested="${HERMES_WEBUI_TEST_SHARDS:-}"
+  if [[ -n "$requested" ]]; then
+    if [[ "$requested" =~ ^[0-9]+$ ]] && (( requested >= 1 )); then
+      n="$requested"
+      if (( n > default_n )); then
+        ci_warn "HERMES_WEBUI_TEST_SHARDS=$n exceeds the memory-aware suggestion ($default_n) — shards may be OOM-killed (exit 137)."
+      fi
+    else
+      ci_warn "HERMES_WEBUI_TEST_SHARDS='$requested' is not a positive integer — using default ($default_n)."
+      n="$default_n"
+    fi
+  else
+    n="$default_n"
+  fi
+
+  local args_str
+  args_str="${HERMES_WEBUI_PUSH_PYTEST_ARGS:-tests/ -q --timeout=60}"
+  local args=()
+  read -r -a args <<<"$args_str"
+
+  local native=0 mode
+  if pytest_shard_ok; then
+    native=1
+    mode="pytest-shard (native --shard-id partition, like CI)"
+  else
+    mode="file-chunk fallback (pytest-shard unavailable/broken in this venv)"
+  fi
+  ci_info "test gate: $n shard(s) — mode: $mode — args: $args_str"
+
+  PREPUSH_TMP="$(mktemp -d "${TMPDIR:-/tmp}/hermes-prepush.XXXXXX")"
+
+  local pids=() i
+  local start=$SECONDS
+  if (( native )); then
+    for ((i = 0; i < n; i++)); do
+      run_shard "$PREPUSH_TMP/shard_$i.log" "${args[@]}" --shard-id="$i" --num-shards="$n" &
+      pids+=("$!")
+    done
+  else
+    # File-level sharding: collect the universe once (with the caller's args,
+    # so a narrowed HERMES_WEBUI_PUSH_PYTEST_ARGS shrinks the chunks too),
+    # split the sorted file list into N contiguous chunks, one pytest per chunk.
+    local collect_log="$PREPUSH_TMP/collect.log"
+    if ! (cd "$ROOT" && "$VENV_PY" -m pytest --collect-only -q "${args[@]}") >"$collect_log" 2>&1; then
+      ci_fail "file-chunk fallback: test collection failed — see $collect_log"
+      KEEP_PREPUSH_TMP=1
+      return 1
+    fi
+    sed -e 's/::.*//' "$collect_log" | grep -E '^tests/[^ ]+\.py$' | sort -u >"$PREPUSH_TMP/files.txt"
+    local files=()
+    mapfile -t files <"$PREPUSH_TMP/files.txt"
+    local total=${#files[@]}
+    if (( total == 0 )); then
+      ci_fail "file-chunk fallback: no test files collected — see $collect_log"
+      KEEP_PREPUSH_TMP=1
+      return 1
+    fi
+    # Positional path args (e.g. the default 'tests/') would make every chunk
+    # run the WHOLE suite — drop path-like positionals, keep flags. Unknown
+    # positionals are kept so explicit node-ids still behave predictably.
+    local run_args=() a
+    for a in "${args[@]}"; do
+      case "$a" in
+        -*) run_args+=("$a") ;;
+        *)  if [[ ! -e "$ROOT/$a" && "$a" != *.py* ]]; then run_args+=("$a"); fi ;;
+      esac
+    done
+    ci_info "file-chunk fallback: $total test file(s) split into $n chunk(s)."
+    local base to count
+    for ((i = 0; i < n; i++)); do
+      base=$(( total * i / n ))
+      to=$(( total * (i + 1) / n ))
+      count=$(( to - base ))
+      if (( count == 0 )); then
+        printf 'no files in this chunk (more shards than files) — trivially PASS\n' >"$PREPUSH_TMP/shard_$i.log"
+        pids+=("-") # sentinel: nothing to wait on
+      else
+        local chunk=("${files[@]:base:count}")
+        run_shard "$PREPUSH_TMP/shard_$i.log" "${chunk[@]}" "${run_args[@]}" &
+        pids+=("$!")
+      fi
+    done
+  fi
+
+  # Aggregate: PASS iff every shard exits 0.
+  local rc=0
+  local -a statuses=()
+  local -a empties=()
+  for ((i = 0; i < n; i++)); do
+    empties[$i]=0
+    if [[ "${pids[$i]}" == "-" ]]; then
+      statuses[$i]=0
+      continue
+    fi
+    if wait "${pids[$i]}"; then
+      statuses[$i]=0
+    else
+      statuses[$i]=$?
+    fi
+    # pytest exit 5 = "no tests collected": with more shards than tests, or a
+    # narrowed HERMES_WEBUI_PUSH_PYTEST_ARGS, a shard's partition can be
+    # legitimately empty. An empty partition is not a test failure — CI never
+    # sees this (5 shards x ~11.5k tests), local subsets do. (A bad path is a
+    # usage error = exit 4, which still fails.)
+    if (( statuses[$i] == 5 )); then
+      statuses[$i]=0
+      empties[$i]=1
+    fi
+    (( statuses[$i] == 0 )) || rc=1
+  done
+
+  local elapsed=$((SECONDS - start))
+  local log
+  for ((i = 0; i < n; i++)); do
+    log="$PREPUSH_TMP/shard_$i.log"
+    if (( statuses[$i] == 0 )); then
+      if (( empties[$i] )); then
+        ci_pass "shard $((i + 1))/$n: PASS $(_shard_elapsed "$log") (empty partition — no tests collected) — $log"
+      else
+        ci_pass "shard $((i + 1))/$n: PASS $(_shard_elapsed "$log") — $log"
+      fi
+    else
+      ci_fail "shard $((i + 1))/$n: FAIL (exit ${statuses[$i]}, $(_shard_elapsed "$log")) — full log: $log; last 30 lines follow:"
+      tail -n 30 "$log" >&2 || true
+    fi
+  done
+  if (( rc )); then
+    KEEP_PREPUSH_TMP=1
+    ci_info "sharded pytest: FAILED — mode: $mode ; shards: $n ; wall: ${elapsed}s (logs kept: $PREPUSH_TMP)"
+  else
+    ci_info "sharded pytest: PASS — mode: $mode ; shards: $n ; wall: ${elapsed}s (logs removed)"
+  fi
+  return "$rc"
+}
+
+# --- optional browser smoke ----------------------------------------------------------
+# OFF by default: playwright is NOT in requirements-dev.txt, and this hook must
+# never auto-download browsers without consent. Opting in consents to
+# "pip install playwright" + "python -m playwright install chromium" in the venv.
+gate_browser_smoke() {
+  if ci_skip_requested HERMES_WEBUI_SKIP_BROWSER_SMOKE; then
+    ci_warn "HERMES_WEBUI_SKIP_BROWSER_SMOKE=1 — browser smoke gate bypassed."
+    return 0
+  fi
+  if ! ci_skip_requested HERMES_WEBUI_PUSH_BROWSER_SMOKE; then
+    if "$VENV_PY" -c 'import playwright' >/dev/null 2>&1; then
+      ci_skip "browser smoke: not enabled (playwright IS importable in .venv — opt in with HERMES_WEBUI_PUSH_BROWSER_SMOKE=1)."
+    else
+      ci_skip "browser smoke: playwright not installed in .venv and the gate is opt-in — skipped (set HERMES_WEBUI_PUSH_BROWSER_SMOKE=1 to install playwright+chromium and run it; never auto-downloaded)."
+    fi
+    return 0
+  fi
+  if ! "$VENV_PY" -c 'import playwright' >/dev/null 2>&1; then
+    ci_info "installing playwright into .venv (opted in via HERMES_WEBUI_PUSH_BROWSER_SMOKE=1)..."
+    if ! "$VENV_PY" -m pip install playwright; then
+      ci_fail "browser smoke: 'pip install playwright' failed."
+      return 1
+    fi
+  fi
+  ci_info "ensuring chromium is present (python -m playwright install chromium)..."
+  if ! "$VENV_PY" -m playwright install chromium; then
+    ci_fail "browser smoke: 'python -m playwright install chromium' failed."
+    return 1
+  fi
+  (cd "$ROOT" && "$VENV_PY" tests/browser_smoke.py)
+}
+
+# --- main ------------------------------------------------------------------------------
+
+main() {
+  if ci_skip_requested HERMES_WEBUI_SKIP_HOOKS; then
+    ci_warn "HERMES_WEBUI_SKIP_HOOKS=1 — ALL local CI gates bypassed for this push."
+    exit 0
+  fi
+
+  local rc=0
+
+  ci_info "ensuring .venv + dev test deps (./scripts/test.sh --version)..."
+  ensure_venv_deps || exit 1
+
+  if ci_skip_requested HERMES_WEBUI_SKIP_PY_LINT; then
+    ci_warn "HERMES_WEBUI_SKIP_PY_LINT=1 — compileall + ruff gates bypassed (git commit --no-verify could therefore skip the whole lint surface)."
+  else
+    gate_compileall || rc=1
+    gate_ruff_diff || rc=1
+  fi
+
+  if ci_skip_requested HERMES_WEBUI_SKIP_TESTS; then
+    ci_warn "HERMES_WEBUI_SKIP_TESTS=1 — full pytest gate bypassed."
+  else
+    run_test_gate || rc=1
+  fi
+
+  if (( rc == 0 )); then
+    gate_browser_smoke || rc=1
+  else
+    ci_skip "browser smoke: skipped (earlier gates failed)."
+  fi
+
+  if (( rc != 0 )); then
+    ci_fail "pre-push: one or more gates failed — push blocked."
+    exit 1
+  fi
+  ci_pass "pre-push: all gates passed."
+}
+
+main "$@"

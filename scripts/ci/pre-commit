@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# pre-commit — local mirror of the hermes-webui CI lint surface (.github/workflows/
+# tests.yml "lint" job). Target runtime: seconds to ~1 minute.
+#
+# Gates, in CI order:
+#   1. whole-tree Python syntax gate (compileall)            — always runs
+#   2. ruff forward gate, committed content (origin/master)  — always runs
+#   2b. ruff forward gate, STAGED content (HEAD..index)      — what CI only sees
+#       after the push; ruff_lint.py alone cannot see the index at commit time
+#   3. ESLint runtime guard + scope/undef gate               — only when a
+#       static/**/*.js file is staged (CI runs these on every push; the hook
+#       scopes them to static-JS changes to keep commit latency low)
+#
+# Skip controls (each prints a prominent warning): HERMES_WEBUI_SKIP_HOOKS=1
+# (everything), HERMES_WEBUI_SKIP_PY_LINT=1 (gates 1/2/2b), HERMES_WEBUI_SKIP_JS=1
+# (gate 3).
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+# --- gate 2b: ruff forward gate over STAGED content ------------------------------
+# scripts/ruff_lint.py --diff origin/master gates committed content
+# (merge-base..HEAD); at pre-commit time the index is the thing being validated
+# and is invisible to that diff. This gate reuses ruff_lint.py's own machinery
+# (module import — no logic duplication) against the staged diff (HEAD..index),
+# so a violation is caught at commit time with the exact findings CI's ruff
+# step would report once this commit lands.
+gate_ruff_staged() {
+  if [[ -z "${VENV_PY:-}" ]]; then
+    # Unreachable when gate 2 ran (it ensures the venv or failed the hook);
+    # defensive no-op for direct/partial invocation.
+    return 0
+  fi
+  if "$VENV_PY" - "$ROOT" <<'PYEOF'
+import os
+import subprocess
+import sys
+
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "scripts"))
+import ruff_lint  # the project's own gate module — reuse it, don't fork it
+
+
+def git(*args):
+    return subprocess.run(
+        ["git", "-C", root, *args], capture_output=True, text=True
+    ).stdout
+
+
+def staged_added_lines(path):
+    # ruff_lint._added_lines diffs <base>..HEAD; we need HEAD..index (--cached).
+    diff = git("diff", "--unified=0", "--cached", "HEAD", "--", path)
+    added, new_ln = set(), 0
+    for line in diff.splitlines():
+        m = ruff_lint._HUNK_RE.match(line)
+        if m:
+            new_ln = int(m.group(1))
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            added.add(new_ln)
+            new_ln += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            continue  # deletion: new-file pointer does not advance
+        elif not line.startswith(("@@", "diff ", "index ", "--- ", "+++ ")):
+            new_ln += 1
+    return added
+
+
+ruff = ruff_lint._ruff_cmd()
+if ruff is None:
+    # Same contract as ruff_lint.py: a dev without ruff is not blocked here;
+    # CI installs ruff so enforcement still holds there.
+    print("staged ruff gate: ruff unavailable — skipping (same contract as ruff_lint.py).")
+    sys.exit(0)
+
+files = [
+    f
+    for f in git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "HEAD").splitlines()
+    if f.endswith(".py") and os.path.exists(os.path.join(root, f))
+]
+if not files:
+    print("staged ruff gate: no staged .py files. OK.")
+    sys.exit(0)
+
+try:
+    findings = ruff_lint._ruff_check_json(ruff, files)
+except Exception as exc:  # broken ruff invocation must never green-light a commit
+    print(f"staged ruff gate: ruff invocation failed: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+added_map = {f: staged_added_lines(f) for f in files}
+new_findings = []
+for finding in findings:
+    rel = os.path.relpath(finding.get("filename", ""), root)
+    row = finding.get("location", {}).get("row")
+    if rel in added_map and row in added_map[rel]:
+        new_findings.append(finding)
+
+print(
+    f"staged ruff gate: {len(files)} staged .py file(s), "
+    f"{len(findings)} total finding(s) in them, "
+    f"{len(new_findings)} on staged added/modified lines."
+)
+if new_findings:
+    print("\nNew ruff violations in STAGED code (CI's ruff step would flag these after push):\n")
+    ruff_lint._print_findings(new_findings)
+    sys.exit(1)
+print("staged ruff gate: no new violations on staged lines. OK.")
+PYEOF
+  then
+    ci_pass "ruff forward gate (staged content): OK."
+    return 0
+  fi
+  ci_fail "ruff forward gate (staged content): FAILED — fix the flagged staged lines."
+  return 1
+}
+
+# --- gate 3: JS runtime guards (only when static JS is staged) --------------------
+# Mirrors the two CI ESLint passes:
+#   * npm run lint:runtime — no-const-assign / no-import-assign (#3162 class)
+#   * scripts/scope_undef_gate.py — no-undef across the shared classic-<script>
+#     global scope (#3696 class); needs `eslint` on PATH, hence node_modules/.bin.
+gate_js() {
+  local staged_js
+  staged_js="$(git -C "$ROOT" diff --cached --name-only --diff-filter=ACMR | grep -E '^static/.*\.js$' || true)"
+  if [[ -z "$staged_js" ]]; then
+    ci_skip "JS gates: no staged static/**/*.js (hook scopes them to static-JS changes; CI runs them on every push)."
+    return 0
+  fi
+
+  # Fail closed on the Node version BEFORE any npm install: eslint ^10 refuses
+  # Node < 20 with a misleading engine error, and installing tooling we then
+  # cannot run just wastes minutes.
+  if ! command -v node >/dev/null 2>&1; then
+    ci_fail "ESLint runtime gate requires Node >= 20 (eslint ^10); node was not found on PATH — upgrade Node or set HERMES_WEBUI_SKIP_JS=1 (understands the gate is off)"
+    return 1
+  fi
+  local version major
+  version="$(node --version 2>/dev/null || printf 'v?')"
+  major="${version#v}"
+  major="${major%%.*}"
+  if ! [[ "$major" =~ ^[0-9]+$ ]] || (( major < 20 )); then
+    ci_fail "ESLint runtime gate requires Node >= 20 (eslint ^10); you have $version — upgrade Node or set HERMES_WEBUI_SKIP_JS=1 (understands the gate is off)"
+    return 1
+  fi
+
+  if [[ ! -x "$ROOT/node_modules/.bin/eslint" ]]; then
+    ci_info "eslint not present in node_modules — running npm install --no-save (devDependencies from package.json)..."
+    if ! (cd "$ROOT" && npm install --no-save --loglevel=error); then
+      ci_fail "npm install (eslint) failed — fix npm/network, or set HERMES_WEBUI_SKIP_JS=1 (understands the gate is off)"
+      return 1
+    fi
+  fi
+  if ! (cd "$ROOT" && npm run lint:runtime); then
+    ci_fail "ESLint runtime gate FAILED (no-const-assign / no-import-assign, #3162 class)."
+    return 1
+  fi
+  local py="${VENV_PY:-}"
+  if [[ -z "$py" ]]; then
+    py="$(command -v python3 || printf 'python3')"
+  fi
+  if ! (cd "$ROOT" && PATH="$ROOT/node_modules/.bin:$PATH" "$py" scripts/scope_undef_gate.py); then
+    ci_fail "scope_undef gate FAILED (no-undef across the shared classic-script global scope, #3696 class)."
+    return 1
+  fi
+  return 0
+}
+
+# --- main -------------------------------------------------------------------------
+
+main() {
+  if ci_skip_requested HERMES_WEBUI_SKIP_HOOKS; then
+    ci_warn "HERMES_WEBUI_SKIP_HOOKS=1 — ALL local CI gates bypassed for this commit. GitHub Actions will still run them after push."
+    exit 0
+  fi
+
+  local rc=0
+  if ci_skip_requested HERMES_WEBUI_SKIP_PY_LINT; then
+    ci_warn "HERMES_WEBUI_SKIP_PY_LINT=1 — Python syntax + ruff gates bypassed."
+  else
+    # CI order: compileall -> ruff diff; all gates run (no fail-fast) so the
+    # developer sees the full failure picture in one commit attempt.
+    gate_compileall || rc=1
+    gate_ruff_diff || rc=1
+    gate_ruff_staged || rc=1
+  fi
+
+  if ci_skip_requested HERMES_WEBUI_SKIP_JS; then
+    ci_warn "HERMES_WEBUI_SKIP_JS=1 — ESLint runtime guards bypassed."
+  else
+    gate_js || rc=1
+  fi
+
+  if (( rc != 0 )); then
+    ci_fail "pre-commit: one or more gates failed — commit blocked."
+    exit 1
+  fi
+  ci_pass "pre-commit: all gates passed."
+}
+
+main "$@"
