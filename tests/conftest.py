@@ -175,6 +175,14 @@ os.environ['HERMES_WEBUI_TEST_STATE_DIR'] = str(TEST_STATE_DIR)
 os.environ['HERMES_WEBUI_STATE_DIR'] = str(TEST_STATE_DIR)
 os.environ['HERMES_WEBUI_DEFAULT_WORKSPACE'] = str(TEST_WORKSPACE)
 os.environ['HERMES_HOME'] = str(TEST_STATE_DIR)
+# Test modules that import bootstrap.py at collection time can discover and
+# import the repo's agent checkout (.hermes/hermes-agent), whose bootstrap
+# exports TMPDIR=$HERMES_HOME/cache/scratch — inside TEST_STATE_DIR, which the
+# session fixtures wipe and recreate. Pin TMPDIR to a per-run sibling that
+# nothing deletes; the agent's bootstrap leaves a pre-set TMPDIR alone.
+TEST_TMP_DIR = TEST_STATE_DIR.parent / (TEST_STATE_DIR.name + '-tmp')
+TEST_TMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ['TMPDIR'] = str(TEST_TMP_DIR)
 # Never let a test process, or a server.py child that copies os.environ, install Agent
 # dependencies into the test home (pm.install.lazy_installs_allowed / venv_sync.prepare_launch).
 os.environ['HERMES_DISABLE_LAZY_INSTALLS'] = '1'
@@ -1157,6 +1165,11 @@ def test_server():
     # hundreds of opaque failures from a single root cause.
     import tempfile as _tempfile
     _server_log = pathlib.Path(_tempfile.gettempdir()) / f"hermes-webui-test-server-{TEST_PORT}.log"
+    # TMPDIR may point inside TEST_STATE_DIR (agent code imported during
+    # collection sets it to the isolated home's cache/scratch); the clean-slate
+    # rmtree above can then remove the probed dir — open("w") never creates
+    # parents, so recreate the parent to keep the boot log writable either way.
+    _server_log.parent.mkdir(parents=True, exist_ok=True)
 
     # Boot the server, retrying once if it dies early or fails to bind. Boot
     # failures here are most often transient (a port not yet released by a prior
