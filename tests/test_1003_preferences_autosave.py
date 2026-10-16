@@ -86,12 +86,18 @@ def test_preference_fields_use_schedule_autosave_not_mark_dirty():
         # We use a context window around the dom_id to find the listener.
         idx = panel.find(f"$('{dom_id}')")
         assert idx != -1, f"{dom_id} not loaded in loadSettingsPanel"
-        # Window of next ~600 chars covers the .addEventListener call
-        window = panel[idx:idx + 600]
+        # Presence window of ~1200 chars: the settingsLanguage listener carries
+        # the skin-pack re-render hook before its autosave call, so the call can
+        # sit deeper in the handler body.
+        window = panel[idx:idx + 1200]
         assert "addEventListener" in window, f"{dom_id} has no addEventListener"
         assert "_schedulePreferencesAutosave" in window, \
             f"{dom_id} listener should call _schedulePreferencesAutosave (Phase 2 #1003)"
-        assert "_markSettingsDirty" not in window, \
+        # Absence window stays tight (~600 chars): _markSettingsDirty in THIS
+        # listener would be adjacent to the attachment. A wide window would
+        # falsely catch neighboring fields' legitimate dirty markers.
+        tight = panel[idx:idx + 600]
+        assert "_markSettingsDirty" not in tight, \
             f"{dom_id} should not call _markSettingsDirty (Phase 2 autosaves it)"
 
 

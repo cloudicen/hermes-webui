@@ -183,8 +183,8 @@ class TestSystemTheme:
 
     def test_commands_uses_apply_theme(self):
         src = read("static/commands.js")
-        assert "_applyTheme(appearance.theme)" in src, (
-            "cmdTheme must call _applyTheme() with the normalized canonical theme"
+        assert "_pickTheme(val)" in src, (
+            "cmdTheme must route theme values through _pickTheme, which owns the theme axis"
         )
 
     def test_commands_accept_legacy_theme_aliases(self):
@@ -248,7 +248,9 @@ class TestSystemTheme:
         src = read("static/panels.js")
         # PR #2799 (v0.51.119): skin precedence now prefers localStorage over settings.skin
         # so the inline-gate-resolved DOM skin survives the picker hydration.
-        skin_idx = src.index("const skinVal=(localStorage.getItem('hermes-skin')||settings.skin||'default').toLowerCase();")
+        # (Batch 3 unified axis: hydration derives the legacy skin value from the
+        # active pack entry — css-key packs surface their bare key.)
+        skin_idx = src.index("const skinVal=(activePack&&activePack.applyMode==='css-key')?String(activePack.key).toLowerCase():'default';")
         # models is now declared as let models=null before the try block
         models_idx = src.index("models=await api('/api/models');")
         assert skin_idx < models_idx, (
