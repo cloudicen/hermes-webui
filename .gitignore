@@ -20,6 +20,8 @@ archive/
 .claude/
 CLAUDE.md
 AGENTS.local.md
+.omo/
+.opencode/
 .cursorrules
 .windsurfrules
 .aider*
