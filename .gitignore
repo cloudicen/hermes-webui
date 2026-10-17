@@ -55,6 +55,8 @@ docs/*
 !docs/rfcs/**
 !docs/architecture/
 !docs/architecture/**
+!docs/upstream/
+!docs/upstream/**
 
 # Local-only AI assistant context — never committed even under docs/.
 docs/AGENTS.md
