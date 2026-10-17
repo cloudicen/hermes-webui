@@ -1,0 +1,7 @@
+[Unit]
+Description=hermes-webui upstream digest
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/cloudicen/hermes-webui
+ExecStart=/home/cloudicen/hermes-webui/scripts/upstream-watch.sh
