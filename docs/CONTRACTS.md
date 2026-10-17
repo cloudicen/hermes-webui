@@ -112,8 +112,11 @@ contributor guidance; it does not change runtime behavior or CI gates.
   singular `model:` never gates, no allowlist shows the full catalog), the
   serialized-list shapes `hermes config set` persists, the deliberate
   empty-allowlist-is-not-configured rule, and the probe-failure fallback.
-  Start here before changing custom-provider model filtering or
-  discovery-vs-allowlist semantics (#7165, #7404).
+  Custom providers now also have a WebUI write path (Settings → Providers,
+  `POST /api/providers/custom*`); entries it writes are governed by this same
+  contract. Start here before changing custom-provider model filtering, the
+  custom-provider WebUI write path, or discovery-vs-allowlist semantics
+  (#7165, #7404).
 - [`docs/architecture/profile-home-resolve-cache.md`](architecture/profile-home-resolve-cache.md):
   current contract for the call-scoped memoization around
   `_resolve_profile_home_param()` in `api/workspace.py`: what it caches, the

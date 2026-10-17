@@ -12,7 +12,7 @@
 > Python 3.11, 3.12, and 3.13 (3 parallel shards each) against every PR, plus a ruff
 > lint gate, a headless browser smoke test, and a Docker smoke test.
 >
-> Notable architecture state: the bootstrap and first-run onboarding flow own setup discovery; the default WebUI state directory is `~/.hermes/webui`; `ctl.sh` provides a daemon wrapper for homelab installs; chat streaming is still WebUI-owned SSE with stream-ownership guards, cancellation, async manual compression, and turn-journal audit plumbing; provider/model discovery is profile-aware with live-model cache invalidation and custom-provider scoping. (Version/test-count numbers above are a periodic snapshot — the authoritative source is the latest git tag and `pytest --collect-only`.)
+> Notable architecture state: the bootstrap and first-run onboarding flow own setup discovery; the default WebUI state directory is `~/.hermes/webui`; `ctl.sh` provides a daemon wrapper for homelab installs; chat streaming is still WebUI-owned SSE with stream-ownership guards, cancellation, async manual compression, and turn-journal audit plumbing; provider/model discovery is profile-aware with live-model cache invalidation and custom-provider scoping; custom providers are managed end-to-end in Settings → Providers (config.yaml entry + `.env` key + model discovery refresh). (Version/test-count numbers above are a periodic snapshot — the authoritative source is the latest git tag and `pytest --collect-only`.)
 
 ---
 
@@ -64,6 +64,7 @@ actions. The topbar remains focused on conversation context and the workspace/fi
       models.py            Session model + CRUD, per-session profile tracking, CLI/state.db bridge
       profiles.py          Profile state management, hermes_cli wrapper
       onboarding.py        First-run onboarding status, real provider config writes, OAuth linking, readiness detection
+      providers.py         Provider registry for the settings panel: API-key CRUD and the custom-provider lifecycle (create/update/delete + remote model-list refresh) written from the WebUI
       routes.py            All GET + POST route handlers (if/elif dispatch, no decorators)
       skinpacks.py         Skin pack discovery, manifest validation, setting sanitizers, sandboxed asset serving
       startup.py           Startup helpers: auto_install_agent_deps()

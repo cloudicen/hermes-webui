@@ -130,6 +130,12 @@ Most LM Studio, Ollama, vLLM, llama-server, and TabbyAPI installs run this way.
 Use **Test connection** to verify the Base URL and populate the model list
 before continuing.
 
+Custom providers are not limited to the wizard: Settings → Providers can add,
+edit, and delete them at any time. Enter a name, Base URL, and optional API
+key, and WebUI fetches the model list from the endpoint (`/v1/models`) for
+you; when the endpoint exposes no model list, configure the models manually
+instead.
+
 AIML API uses the existing custom OpenAI-compatible setup path, not a
 first-class built-in Hermes provider id. Configure it under the
 custom-provider flow with Base URL `https://api.aimlapi.com/v1`, then use

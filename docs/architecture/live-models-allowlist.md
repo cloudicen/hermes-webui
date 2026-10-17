@@ -95,10 +95,14 @@ and forces the trade-off to be re-argued.
 deliberately treated as **not configured**, never as "allow nothing". The
 filter runs only on a non-empty allowlist because gating on declared-ness
 would emit an empty picker and make the provider unselectable — a harder
-failure than showing a few extra models, and unrecoverable from the UI
-(`custom_providers` has no WebUI write path; it is hand-edited in
-config.yaml). There is no deny-all use case: a provider the user wants hidden
-is removed from `custom_providers` outright.
+failure than showing a few extra models. The rule predates the WebUI
+custom-provider write path (Settings → Providers, `POST /api/providers/custom`
+and `/api/providers/custom/delete`) and is unchanged by it: an empty list is
+still "not configured", not "deny all", and the UI exposes no deny-all
+affordance — the write path improves recoverability, it does not retire the
+original reason. There is no deny-all use case: a provider the user wants
+hidden is removed from `custom_providers` outright, now from the same
+Settings → Providers pane (or config.yaml).
 
 ### Probe failure / empty probe
 
