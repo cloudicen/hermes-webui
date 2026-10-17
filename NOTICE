@@ -1,0 +1,37 @@
+NOTICE
+
+This repository is an independent fork of nesquena/hermes-webui
+(https://github.com/nesquena/hermes-webui).
+
+Divergence anchor
+
+The point where this fork departed from upstream is marked by an
+annotated tag whose name embeds the actual fork date, in the form
+fork-point-YYYY-MM-DD. Always look the tag up instead of trusting any
+date written down elsewhere:
+
+    git tag -l 'fork-point-*'
+
+(Example current value: fork-point-2026-10-15. The tag is the source of
+truth; the example only illustrates the naming scheme.)
+
+Copyright and licensing
+
+- Portions of this software are copyright (c) 2025 Hermes Web UI
+  Contributors and are licensed under the upstream MIT license. The
+  upstream MIT license text is preserved unmodified in the LICENSE file
+  of this repository, as required by that license.
+
+- Fork modifications are copyright (c) 2026 cloudicen and are licensed
+  under the MIT license unless a file or directory states otherwise in
+  its own header or a local NOTICE.
+
+- The LICENSE file of this repository carries both copyright lines:
+  the upstream 2025 line and the 2026 fork line for modifications.
+
+Inbound contribution policy
+
+Contributions to this repository are accepted under the MIT license
+(inbound = outbound): by submitting a contribution you license it
+under the same MIT terms this repository is distributed under. No
+separate contributor license agreement is required.
