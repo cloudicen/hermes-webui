@@ -42,3 +42,31 @@
 
 <!-- Entry #0（基线）由基线流程按上述模板写入：fork-point tag 名与 sha、
      自有提交数、上游领先数、机制文件清单，采纳/拒绝清单均为 (none)。 -->
+
+## Entry #0 —— 2026-10-18
+
+- 日期: 2026-10-18
+- digest 文件: digest-20261018-0351.md（基线 digest，生成于 `.omo/upstream-watch/`，
+  该目录不入 git，本地查阅）
+- 上游范围: fd681377310b4590acfd7b69d255b3e75f6e47bb..77c8fc1745734262c88324e5d4b545a13953baa5
+- 模式: 无（基线建立，非同步动作）
+- 采纳清单: (none)
+- 拒绝清单: (none)
+- 冲突与偏离记录: (none)
+- 基线事实（建立 fork-point tag 时记录）：
+  - fork-point tag: `fork-point-2026-10-15`（annotated tag，peel 到提交 sha
+    fd681377310b4590acfd7b69d255b3e75f6e47bb，即本线与 upstream/master 的 merge-base）
+  - 自有提交数（fork-point..master）: 25
+  - 上游领先数（master..upstream/master）: 421（与基线 digest 头部计数一致）
+- 声明: 本仓库自此以独立线开始，**尚未同步任何上游内容**；此后每一次同步动作
+  按 [UPSTREAM-SYNC.md](UPSTREAM-SYNC.md) 执行并在本文件递增一条 entry。
+- 机制文件清单（本轮落地的全部机制文件，均已入库）：
+  - scripts/upstream-watch.sh（digest 生成器）
+  - scripts/systemd/upstream-watch.service、scripts/systemd/upstream-watch.timer
+    （systemd user timer，定时刷新 digest）
+  - docs/upstream/UPSTREAM-SYNC.md（选择性同步手册）、docs/upstream/SYNC-LOG.md（本文件）、
+    docs/upstream/LICENSING.md（license 合规细则）、docs/upstream/CONTRIBUTING-BACK.md（反哺上游指南）
+  - NOTICE（仓库根，溯源清单骨架）、LICENSE（含 fork 版权行）
+- 测试证据: 随本 entry 的单次推送触发 pre-push 全量门禁（scripts/ci/pre-push，
+  sharded pytest ~11.5k tests），结果见 .omo/evidence/task-7-upstream-sync.log
+- 结果 commit sha: （本 entry 即基线提交：`git log -1 -- docs/upstream/SYNC-LOG.md`）
