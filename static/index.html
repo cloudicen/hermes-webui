@@ -1524,6 +1524,7 @@
                 <div class="settings-section-title" data-i18n="providers_section_title">Providers</div>
                 <div class="settings-section-meta" data-i18n="providers_section_meta">Manage API keys for AI providers. Changes take effect immediately.</div>
               </div>
+              <button type="button" class="sm-btn providers-add-custom-btn" id="addCustomProviderBtn" onclick="openCustomProviderModal()" data-i18n="providers_custom_add">Add custom provider</button>
             </div>
             <div id="providersList" style="display:flex;flex-direction:column;margin-top:4px">
               <!-- Populated dynamically by loadProvidersPanel() -->
@@ -1947,6 +1948,60 @@
     <div class="kanban-modal-actions">
       <button type="button" class="btn secondary" onclick="closeKanbanTaskModal()" data-i18n="cancel">Cancel</button>
       <button type="button" class="btn primary" id="kanbanTaskModalSubmit" onclick="submitKanbanTaskModal()" data-i18n="create">Create</button>
+    </div>
+  </div>
+</div>
+<!-- Custom provider: add/edit modal — same overlay pattern as the kanban modals above.
+     JS contract lives in panels.js (openCustomProviderModal / submitCustomProviderModal).
+     The API key input is write-only: it is never prefilled from server data. -->
+<div class="kanban-modal-overlay" id="customProviderModal" hidden onclick="if(event.target===this)closeCustomProviderModal()">
+  <div class="kanban-modal" role="dialog" aria-modal="true" aria-labelledby="customProviderModalTitle">
+    <h3 id="customProviderModalTitle" data-i18n="providers_custom_add_title">Add custom provider</h3>
+    <input type="hidden" id="customProviderModalMode" value="create">
+    <input type="hidden" id="customProviderModalOriginalName" value="">
+    <div class="kanban-modal-row">
+      <label for="customProviderModalName" data-i18n="providers_custom_name">Name</label>
+      <input type="text" id="customProviderModalName" maxlength="64" data-i18n-placeholder="providers_custom_name_placeholder" placeholder="My Gateway" autocomplete="off">
+    </div>
+    <div class="kanban-modal-row">
+      <label for="customProviderModalBaseUrl" data-i18n="providers_custom_base_url">Base URL</label>
+      <input type="text" id="customProviderModalBaseUrl" maxlength="512" spellcheck="false" data-i18n-placeholder="providers_custom_base_url_placeholder" placeholder="https://gw.example/v1" autocomplete="off">
+    </div>
+    <div class="kanban-modal-row">
+      <label for="customProviderModalApiKey" data-i18n="providers_custom_api_key">API key (optional)</label>
+      <div class="custom-provider-key-row">
+        <input type="password" id="customProviderModalApiKey" maxlength="512" autocomplete="new-password" data-i18n-placeholder="providers_key_placeholder_new" placeholder="sk-...">
+        <button type="button" class="btn secondary" id="customProviderModalKeyToggle" onclick="toggleCustomProviderKeyVisibility()" data-i18n="providers_custom_key_show">Show</button>
+      </div>
+      <div class="kanban-modal-hint" id="customProviderModalKeyHint">Optional — leave blank for keyless local servers.</div>
+    </div>
+    <div class="kanban-modal-row custom-provider-discover-row">
+      <label class="custom-provider-checkbox-label" for="customProviderModalDiscover">
+        <input type="checkbox" id="customProviderModalDiscover" checked>
+        <span data-i18n="providers_custom_discover_models">Auto-discover models (live probe)</span>
+      </label>
+    </div>
+    <div class="kanban-modal-row">
+      <label for="customProviderModalFetchBtn" data-i18n="providers_custom_remote_models">Remote model list</label>
+      <div class="custom-provider-fetch-row">
+        <button type="button" class="btn secondary" id="customProviderModalFetchBtn" onclick="fetchCustomProviderModels()" data-i18n="providers_custom_fetch_models">Fetch model list</button>
+      </div>
+      <div class="custom-provider-probe-status" id="customProviderModalProbeStatus" aria-live="polite"></div>
+      <div class="custom-provider-model-chips" id="customProviderModalModelChips"></div>
+    </div>
+    <div class="kanban-modal-row">
+      <label for="customProviderModalModel" data-i18n="providers_custom_default_model">Default model</label>
+      <input type="text" id="customProviderModalModel" maxlength="256" spellcheck="false" data-i18n-placeholder="providers_custom_default_model_placeholder" placeholder="model-id" autocomplete="off">
+    </div>
+    <div class="kanban-modal-row">
+      <label for="customProviderModalModels" data-i18n="providers_custom_manual_models">Manual model list (one per line)</label>
+      <textarea id="customProviderModalModels" rows="3" spellcheck="false" data-i18n-placeholder="providers_custom_manual_models_placeholder" placeholder=""></textarea>
+      <div class="kanban-modal-hint" data-i18n="providers_custom_manual_models_hint">Only needed when the remote has no model list. Filled-in models are saved as the curated list and win over the fetched list.</div>
+    </div>
+    <div class="kanban-modal-error" id="customProviderModalError" aria-live="polite"></div>
+    <div class="kanban-modal-actions">
+      <button type="button" class="btn secondary" onclick="closeCustomProviderModal()" data-i18n="cancel">Cancel</button>
+      <button type="button" class="btn primary" id="customProviderModalSubmit" onclick="submitCustomProviderModal()" data-i18n="save">Save</button>
     </div>
   </div>
 </div>

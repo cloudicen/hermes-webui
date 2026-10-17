@@ -5741,6 +5741,16 @@ main.main > #mainPlugin{display:none;}
 .provider-card-btn-danger:hover{
   background:color-mix(in srgb, var(--error) 10%, transparent);
 }
+/* Editable custom-provider card body (Settings → Providers) */
+.providers-add-custom-btn{flex:0 0 auto;align-self:flex-start;padding:7px 12px;white-space:nowrap;}
+.provider-card-custom{display:flex;flex-direction:column;gap:6px;}
+.provider-card-custom-url{
+  font-size:12px;color:var(--muted);
+  font-family:var(--font-mono);
+  word-break:break-all;line-height:1.45;
+}
+.provider-card-custom-keystatus{font-size:11.5px;color:var(--muted);}
+.provider-card-custom-keystatus.has-key{color:var(--success);}
 
 
 /* ── Plugin visibility cards ── */
@@ -7270,6 +7280,55 @@ main.main.showing-insights > #mainInsights{display:flex;overflow-y:auto;}
   padding:8px 10px;border-radius:8px;
   background:color-mix(in srgb,var(--danger,var(--error,#f87171)) 12%,transparent);
   border:1px solid color-mix(in srgb,var(--danger,var(--error,#f87171)) 35%,transparent);
+}
+/* ── Custom provider modal (reuses the .kanban-modal shell) ── */
+.custom-provider-key-row{display:flex;gap:8px;align-items:center;}
+.custom-provider-key-row input{
+  flex:1;min-width:0;
+  background:var(--input-bg);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);padding:8px 10px;
+  font:inherit;font-size:13px;font-family:var(--font-mono);
+  box-sizing:border-box;
+}
+.custom-provider-key-row input:focus{outline:none;border-color:var(--accent,#FFD700);}
+.custom-provider-key-row .btn{flex-shrink:0;white-space:nowrap;}
+.kanban-modal-row .custom-provider-checkbox-label{
+  display:flex;align-items:center;gap:8px;
+  font-size:12.5px;font-weight:500;color:var(--text);
+  margin-bottom:0;cursor:pointer;
+}
+.custom-provider-checkbox-label input[type="checkbox"]{
+  width:15px;height:15px;flex-shrink:0;
+  accent-color:var(--accent);cursor:pointer;
+}
+.custom-provider-fetch-row{display:flex;gap:8px;align-items:center;margin-top:2px;}
+.custom-provider-probe-status{
+  font-size:11.5px;color:var(--muted);
+  margin-top:6px;min-height:14px;line-height:1.45;
+  overflow-wrap:anywhere;
+}
+.custom-provider-probe-status:empty{margin-top:0;min-height:0;}
+.custom-provider-probe-status-ok{color:var(--success);}
+.custom-provider-probe-status-error{color:var(--error);}
+.custom-provider-model-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.custom-provider-model-chips:empty{display:none;}
+.custom-provider-model-chip{
+  max-width:100%;
+  padding:3px 9px;
+  font-size:11px;font-family:var(--font-mono);
+  color:var(--muted);
+  background:var(--input-bg);
+  border:1px solid var(--border);
+  border-radius:999px;
+  cursor:pointer;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  transition:background .15s ease,color .15s ease,border-color .15s ease;
+}
+.custom-provider-model-chip:hover{border-color:var(--accent,#FFD700);color:var(--text);}
+.custom-provider-model-chip.selected{
+  background:color-mix(in srgb,var(--accent,#FFD700) 14%,transparent);
+  color:var(--text);
+  border-color:color-mix(in srgb,var(--accent,#FFD700) 45%,var(--border));
 }
 .kanban-empty{padding:12px;color:var(--muted);font-size:12px;text-align:center;border:1px dashed var(--border);border-radius:8px;}
 

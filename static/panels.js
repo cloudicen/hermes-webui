@@ -12496,12 +12496,12 @@ function _buildProviderCard(p){
     body.appendChild(field);
     focusInput=input;
 
+  }else if(p.is_custom){
+    body.appendChild(_buildCustomProviderCardBody(p));
   }else{
     const hint=document.createElement('div');
     hint.className='provider-card-hint';
-    hint.textContent=p.is_custom
-      ? 'Custom provider loaded from config.yaml / hermes model. Edit it from the CLI or config file.'
-      : 'Provider is managed outside the WebUI.';
+    hint.textContent='Provider is managed outside the WebUI.';
     body.appendChild(hint);
   }
 
@@ -12552,7 +12552,9 @@ function _buildProviderCard(p){
   refreshBtn.style.alignItems='center';
   refreshBtn.style.gap='5px';
   refreshBtn.innerHTML=`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg> ${t('providers_refresh_models')||'Refresh Models'}`;
-  refreshBtn.onclick=()=>_refreshProviderModels(p.id, refreshBtn);
+  refreshBtn.onclick=p.is_custom
+    ? ()=>_refreshCustomProviderModels(p,refreshBtn)
+    : ()=>_refreshProviderModels(p.id, refreshBtn);
   refreshRow.appendChild(refreshBtn);
   body.appendChild(refreshRow);
   card.appendChild(body);
@@ -12785,6 +12787,331 @@ async function _refreshProviderModels(providerId, btn){
     btn.disabled=false;
     btn.innerHTML=orig;
   }
+}
+
+// ── Custom provider management (WebUI write path) ──────────────────────────
+// Add / edit / delete config.yaml-backed custom_providers entries from
+// Settings → Providers. Modal shell reuses the kanban-modal pattern
+// (_trapModalFocus + Escape + aria-live error row). The API key input is
+// write-only: the stored key is NEVER fetched or prefilled — the card shows
+// has_key status only. Endpoints (see plan API CONTRACT):
+//   POST /api/providers/custom         create/update
+//   POST /api/providers/custom/delete  delete by name
+//   POST /api/providers/custom/models  probe (ad-hoc {base_url,api_key?}) or
+//                                      named refresh+persist ({name})
+let _customProviderModalFocusCleanup=null;
+let _customProviderFetchedModels=[];
+
+function _customProviderModalEsc(ev){
+  if(ev.key==='Escape') closeCustomProviderModal();
+}
+
+function _customProviderEntryName(entry){
+  return (entry&&(entry.name||entry.display_name)||'').trim();
+}
+
+function _customProviderModelId(m){
+  return (m&&typeof m==='object')?(m.id||''):String(m||'');
+}
+
+function _setCustomProviderProbeStatus(msg,kind){
+  const el=$('customProviderModalProbeStatus');
+  if(!el) return;
+  el.textContent=msg||'';
+  el.className='custom-provider-probe-status'+(kind?' custom-provider-probe-status-'+kind:'');
+}
+
+function _renderCustomProviderModelChips(models){
+  const wrap=$('customProviderModalModelChips');
+  if(!wrap) return;
+  wrap.innerHTML='';
+  const list=Array.isArray(models)?models:[];
+  for(const m of list){
+    const id=_customProviderModelId(m);
+    if(!id) continue;
+    const chip=document.createElement('button');
+    chip.type='button';
+    chip.className='custom-provider-model-chip';
+    chip.textContent=id;
+    chip.title=t('providers_custom_model_chip_title');
+    chip.onclick=()=>{
+      const modelInput=$('customProviderModalModel');
+      if(modelInput) modelInput.value=id;
+      wrap.querySelectorAll('.custom-provider-model-chip').forEach(c=>c.classList.remove('selected'));
+      chip.classList.add('selected');
+    };
+    wrap.appendChild(chip);
+  }
+}
+
+function _customProviderProbeFailureMessage(res){
+  const detail=(res&&(res.detail||res.error))||'';
+  const hint=t('providers_custom_fetch_manual_hint');
+  return detail?(detail+' — '+hint):hint;
+}
+
+// api() throws on HTTP 4xx with err.body carrying the raw JSON error body
+// ({error, detail} per the API contract) — surface `detail` for the modal
+// error row, falling back to the error code or the thrown message.
+function _customProviderApiErrorDetail(e){
+  if(e&&e.body){
+    try{
+      const j=JSON.parse(e.body);
+      if(j&&(j.detail||j.error)) return String(j.detail||j.error);
+    }catch(_){}
+  }
+  return (e&&(e.message||e.error))||String(e);
+}
+
+function toggleCustomProviderKeyVisibility(){
+  const input=$('customProviderModalApiKey');
+  const btn=$('customProviderModalKeyToggle');
+  if(!input) return;
+  const revealed=input.type==='text';
+  input.type=revealed?'password':'text';
+  if(btn) btn.textContent=revealed?t('providers_custom_key_show'):t('providers_custom_key_hide');
+}
+
+// entry=null → create mode; entry=GET /api/providers custom object → edit mode.
+function openCustomProviderModal(entry){
+  const modal=$('customProviderModal');
+  if(!modal) return;
+  const errEl=$('customProviderModalError');
+  if(errEl) errEl.textContent='';
+  const isEdit=!!_customProviderEntryName(entry);
+  const nameEl=$('customProviderModalName');
+  const baseUrlEl=$('customProviderModalBaseUrl');
+  const keyEl=$('customProviderModalApiKey');
+  const modelEl=$('customProviderModalModel');
+  const discoverEl=$('customProviderModalDiscover');
+  const manualEl=$('customProviderModalModels');
+  const titleEl=$('customProviderModalTitle');
+  const submitBtn=$('customProviderModalSubmit');
+  const toggleBtn=$('customProviderModalKeyToggle');
+  const keyHint=$('customProviderModalKeyHint');
+  $('customProviderModalMode').value=isEdit?'edit':'create';
+  $('customProviderModalOriginalName').value=isEdit?_customProviderEntryName(entry):'';
+  if(titleEl) titleEl.textContent=isEdit?(t('providers_custom_edit_title')||'Edit custom provider'):(t('providers_custom_add_title')||'Add custom provider');
+  if(nameEl) nameEl.value=isEdit?_customProviderEntryName(entry):'';
+  if(baseUrlEl) baseUrlEl.value=isEdit?((entry.base_url||'').trim()):'';
+  if(keyEl){
+    keyEl.value='';       // write-only field — never prefill a stored key
+    keyEl.type='password';
+  }
+  if(toggleBtn) toggleBtn.textContent=t('providers_custom_key_show')||'Show';
+  if(keyHint){
+    keyHint.textContent=isEdit
+      ? (entry.has_key?(t('providers_custom_key_hint_edit_has')||'Leave blank to keep the stored key.'):(t('providers_custom_key_hint_edit_none')||'No key stored yet.'))
+      : (t('providers_custom_key_hint')||'Optional — leave blank for keyless local servers.');
+  }
+  if(modelEl) modelEl.value=isEdit?(entry.model||''):'';
+  if(discoverEl) discoverEl.checked=isEdit?(entry.discover_models!==false):true;
+  if(manualEl){
+    const curated=isEdit&&Array.isArray(entry.models)&&!entry.models_discovered;
+    manualEl.value=curated?entry.models.map(_customProviderModelId).filter(Boolean).join('\n'):'';
+  }
+  _customProviderFetchedModels=[];
+  _setCustomProviderProbeStatus('');
+  _renderCustomProviderModelChips([]);
+  if(submitBtn){submitBtn.disabled=false;submitBtn.textContent=t('save')||'Save';}
+  modal.hidden=false;
+  if(_customProviderModalFocusCleanup){
+    _customProviderModalFocusCleanup();
+    _customProviderModalFocusCleanup=null;
+  }
+  _customProviderModalFocusCleanup=_trapModalFocus(modal);
+  setTimeout(()=>{const n=$('customProviderModalName');if(n)n.focus();},50);
+  document.addEventListener('keydown',_customProviderModalEsc);
+}
+
+function closeCustomProviderModal(){
+  const modal=$('customProviderModal');
+  if(modal) modal.hidden=true;
+  if(_customProviderModalFocusCleanup){
+    _customProviderModalFocusCleanup();
+    _customProviderModalFocusCleanup=null;
+  }
+  document.removeEventListener('keydown',_customProviderModalEsc);
+  const keyEl=$('customProviderModalApiKey');
+  if(keyEl) keyEl.value='';
+}
+
+// Ad-hoc probe from the modal: {base_url[, api_key]} — probe only, no persistence.
+async function fetchCustomProviderModels(){
+  const baseUrl=(($('customProviderModalBaseUrl')||{}).value||'').trim();
+  if(!baseUrl){
+    _setCustomProviderProbeStatus(t('providers_custom_fetch_needs_url')||'Enter a Base URL first.','error');
+    return;
+  }
+  const apiKey=(($('customProviderModalApiKey')||{}).value||'').trim();
+  const btn=$('customProviderModalFetchBtn');
+  const prevLabel=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent=t('providers_custom_fetching')||'Fetching…';}
+  _setCustomProviderProbeStatus(t('providers_custom_fetching')||'Fetching model list…','pending');
+  try{
+    const payload={base_url:baseUrl};
+    if(apiKey) payload.api_key=apiKey;   // only when the user typed one
+    const res=await api('/api/providers/custom/models',{method:'POST',body:JSON.stringify(payload)});
+    if(res&&res.ok){
+      const models=Array.isArray(res.models)?res.models:[];
+      _customProviderFetchedModels=models;
+      _renderCustomProviderModelChips(models);
+      const count=(res.count!=null)?res.count:models.length;
+      _setCustomProviderProbeStatus(t('providers_custom_fetch_ok',count),'ok');
+      const modelInput=$('customProviderModalModel');
+      if(modelInput&&!modelInput.value.trim()&&models.length){
+        modelInput.value=_customProviderModelId(models[0]);
+      }
+    }else{
+      _customProviderFetchedModels=[];
+      _renderCustomProviderModelChips([]);
+      _setCustomProviderProbeStatus(_customProviderProbeFailureMessage(res),'error');
+    }
+  }catch(e){
+    _customProviderFetchedModels=[];
+    _renderCustomProviderModelChips([]);
+    _setCustomProviderProbeStatus(_customProviderApiErrorDetail(e),'error');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=prevLabel||t('providers_custom_fetch_models')||'Fetch model list';}
+  }
+}
+
+async function submitCustomProviderModal(){
+  const errEl=$('customProviderModalError');
+  if(errEl) errEl.textContent='';
+  const mode=($('customProviderModalMode')||{}).value||'create';
+  const originalName=(($('customProviderModalOriginalName')||{}).value||'').trim();
+  const name=(($('customProviderModalName')||{}).value||'').trim();
+  const baseUrl=(($('customProviderModalBaseUrl')||{}).value||'').trim();
+  const apiKey=(($('customProviderModalApiKey')||{}).value||'').trim();
+  const model=(($('customProviderModalModel')||{}).value||'').trim();
+  const discover=!!($('customProviderModalDiscover')||{checked:true}).checked;
+  const manualRaw=(($('customProviderModalModels')||{}).value||'');
+  // Manual models: split lines, trim, drop empties, dedup; empty → omit `models`.
+  const seen=new Set();
+  const models=[];
+  for(const id of manualRaw.split('\n').map(s=>s.trim()).filter(Boolean)){
+    if(!seen.has(id)){seen.add(id);models.push(id);}
+  }
+  if(!name){
+    if(errEl) errEl.textContent=t('providers_custom_name_required')||'Name is required';
+    return;
+  }
+  if(!baseUrl){
+    if(errEl) errEl.textContent=t('providers_custom_base_url_required')||'Base URL is required';
+    return;
+  }
+  const submitBtn=$('customProviderModalSubmit');
+  if(submitBtn){submitBtn.disabled=true;submitBtn.textContent=t('providers_saving')||'Saving…';}
+  try{
+    const payload={name,base_url:baseUrl,discover_models:discover};
+    if(mode==='edit'&&originalName) payload.original_name=originalName;
+    if(apiKey) payload.api_key=apiKey;   // omitted when untouched on edit
+    if(model) payload.model=model;
+    if(models.length) payload.models=models;
+    const res=await api('/api/providers/custom',{method:'POST',body:JSON.stringify(payload)});
+    if(res&&res.ok){
+      showToast(res.action==='updated'?(t('providers_custom_updated')||'Custom provider updated'):(t('providers_custom_created')||'Custom provider created'));
+      closeCustomProviderModal();
+      _refreshModelDropdownsAfterProviderChange();
+      await loadProvidersPanel();
+    }else{
+      if(errEl) errEl.textContent=(res&&(res.detail||res.error))||(t('providers_custom_save_failed')||'Failed to save custom provider');
+      if(submitBtn){submitBtn.disabled=false;submitBtn.textContent=t('save')||'Save';}
+    }
+  }catch(e){
+    if(errEl) errEl.textContent=_customProviderApiErrorDetail(e);
+    if(submitBtn){submitBtn.disabled=false;submitBtn.textContent=t('save')||'Save';}
+  }
+}
+
+async function _deleteCustomProvider(name,btn){
+  if(!name) return;
+  const ok=await showConfirmDialog({
+    title:t('providers_custom_delete')||'Delete provider',
+    message:(t('providers_custom_delete_confirm')||'Delete custom provider "{name}"? Its models and stored API key will be removed.').replace('{name}',name),
+    confirmLabel:t('providers_custom_delete')||'Delete',
+    danger:true,
+    focusCancel:true,
+  });
+  if(!ok) return;
+  if(btn){btn.disabled=true;btn.textContent=t('providers_removing')||'Removing…';}
+  try{
+    const res=await api('/api/providers/custom/delete',{method:'POST',body:JSON.stringify({name})});
+    if(res&&res.ok){
+      showToast(t('providers_custom_deleted')||'Custom provider deleted');
+      _refreshModelDropdownsAfterProviderChange();
+      await loadProvidersPanel();
+    }else{
+      showToast((res&&(res.detail||res.error))||(t('providers_custom_delete_failed')||'Failed to delete custom provider'));
+      if(btn){btn.disabled=false;btn.textContent=t('providers_custom_delete')||'Delete';}
+    }
+  }catch(e){
+    showToast(_customProviderApiErrorDetail(e));
+    if(btn){btn.disabled=false;btn.textContent=t('providers_custom_delete')||'Delete';}
+  }
+}
+
+// Named-mode refresh on a card: probes the entry's base_url with its stored
+// key and persists models + models_discovered server-side. On failure the
+// stored config is untouched and the user is pointed at manual editing.
+async function _refreshCustomProviderModels(entry,btn){
+  const name=_customProviderEntryName(entry);
+  if(!name||!btn) return;
+  btn.disabled=true;
+  const orig=btn.innerHTML;
+  btn.innerHTML=`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg> ${t('providers_refreshing')||'Refreshing...'}`;
+  try{
+    const res=await api('/api/providers/custom/models',{method:'POST',body:JSON.stringify({name})});
+    if(res&&res.ok){
+      const count=(res.count!=null)?res.count:(Array.isArray(res.models)?res.models.length:0);
+      showToast(t('providers_custom_refresh_ok',count));
+      _refreshModelDropdownsAfterProviderChange();
+      await loadProvidersPanel();
+      return;
+    }
+    showToast(_customProviderProbeFailureMessage(res),6000,'error');
+  }catch(e){
+    showToast(_customProviderApiErrorDetail(e),6000,'error');
+  }
+  if(btn.isConnected){
+    btn.disabled=false;
+    btn.innerHTML=orig;
+  }
+}
+
+// Editable body for is_custom cards: base URL + key status (never the key
+// itself) and Edit / Delete affordances.
+function _buildCustomProviderCardBody(p){
+  const wrap=document.createElement('div');
+  wrap.className='provider-card-custom';
+  if(p.base_url){
+    const url=document.createElement('div');
+    url.className='provider-card-custom-url';
+    url.textContent=p.base_url;
+    wrap.appendChild(url);
+  }
+  const keyStatus=document.createElement('div');
+  keyStatus.className='provider-card-custom-keystatus'+(p.has_key?' has-key':'');
+  keyStatus.textContent=p.has_key?(t('providers_custom_key_configured')||'API key configured'):(t('providers_custom_key_not_configured')||'No API key configured');
+  wrap.appendChild(keyStatus);
+  const actions=document.createElement('div');
+  actions.className='provider-card-row';
+  actions.style.marginTop='6px';
+  const editBtn=document.createElement('button');
+  editBtn.type='button';
+  editBtn.className='provider-card-btn';
+  editBtn.textContent=t('providers_custom_edit')||'Edit';
+  editBtn.onclick=()=>openCustomProviderModal(p);
+  actions.appendChild(editBtn);
+  const deleteBtn=document.createElement('button');
+  deleteBtn.type='button';
+  deleteBtn.className='provider-card-btn provider-card-btn-danger';
+  deleteBtn.textContent=t('providers_custom_delete')||'Delete';
+  deleteBtn.onclick=()=>_deleteCustomProvider(p.name,deleteBtn);
+  actions.appendChild(deleteBtn);
+  wrap.appendChild(actions);
+  return wrap;
 }
 
 let _settingsPasswordEnvLocked=false;
