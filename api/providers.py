@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 
 try:  # POSIX-only; Windows-style environments fall back to process-local locking.
     import fcntl
@@ -35,14 +36,19 @@ except ImportError:  # pragma: no cover - exercised only where fcntl is unavaila
 from api.config import (
     _PROVIDER_DISPLAY,
     _PROVIDER_MODELS,
+    _api_key_env_name,
     _coerce_provider_cost_budget,
     _configured_model_ids,
     _custom_provider_slug_from_name,
+    _custom_provider_slug_key,
     _get_label_for_model,
     _models_from_live_provider_ids,
+    _normalize_base_url_for_match,
     _pool_entry_payloads,
+    _provider_discover_allowed,
     _read_live_provider_model_ids,
     _read_visible_codex_cache_model_ids,
+    _resolve_custom_record_key,
     _save_yaml_config_file,
     _thread_local_env_value,
     get_config,
@@ -1275,6 +1281,10 @@ def _provider_has_key(provider_id: str) -> bool:
     3. ``config.yaml → model.api_key`` (only if provider is the active one)
     4. ``config.yaml → providers.<id>.api_key``
     5. ``config.yaml → custom_providers[].api_key`` (for custom providers)
+    6. ``custom_providers[].key_env`` resolved against ``.env``/``os.environ``
+       (the WebUI custom-provider write path stores keys as a ``key_env``
+       hint plus a ``CUSTOM_<SLUG>_API_KEY`` var in ``.env`` — never the raw
+       key inside config.yaml)
     """
     env_var = _provider_env_var_for(provider_id)
     if env_var:
@@ -1333,6 +1343,16 @@ def _provider_has_key(provider_id: str) -> bool:
                 if _custom_provider_name_matches(provider_id, cp.get("name")):
                     if _provider_value_counts_as_api_key(provider_id, cp.get("api_key")):
                         return True
+                    key_env = str(cp.get("key_env") or "").strip()
+                    if key_env:
+                        env_path = _get_hermes_home() / ".env"
+                        env_values = _load_env_file(env_path)
+                        if _provider_value_counts_as_api_key(provider_id, env_values.get(key_env)):
+                            return True
+                        if _provider_value_counts_as_api_key(
+                            provider_id, _thread_local_env_value(key_env)
+                        ):
+                            return True
     return False
 
 
@@ -1384,6 +1404,17 @@ def _get_provider_api_key(provider_id: str) -> str | None:
                     return _thread_local_env_value(cp_key[2:-1]).strip() or None
                 if _provider_value_counts_as_api_key(provider_id, cp_key):
                     return cp_key
+                # key_env hint: the raw key lives in .env, never config.yaml.
+                key_env = str(cp.get("key_env") or "").strip()
+                if key_env:
+                    env_path = _get_hermes_home() / ".env"
+                    env_values = _load_env_file(env_path)
+                    env_file_value = str(env_values.get(key_env) or "").strip()
+                    if _provider_value_counts_as_api_key(provider_id, env_file_value):
+                        return env_file_value or None
+                    env_value = _thread_local_env_value(key_env).strip()
+                    if _provider_value_counts_as_api_key(provider_id, env_value):
+                        return env_value or None
     # Fallback: try credential pool (e.g. bothub key stored via auth.json)
     for entry in _pool_entry_payloads(provider_id):
         status = str(entry.get("last_status") or "").strip().lower()
@@ -2854,6 +2885,15 @@ def get_providers() -> dict[str, Any]:
             if cp_api_key.startswith("${") and cp_api_key.endswith("}"):
                 env_var = cp_api_key[2:-1]
                 cp_has_key = bool(_thread_local_env_value(env_var).strip())
+            # key_env hint: the WebUI write path stores the key in .env under
+            # CUSTOM_<SLUG>_API_KEY and only names it via key_env.
+            cp_key_env = str(cp.get("key_env") or "").strip()
+            if not cp_has_key and cp_key_env:
+                env_values = _load_env_file(_get_hermes_home() / ".env")
+                if _provider_value_counts_as_api_key(cp_id, env_values.get(cp_key_env)) or (
+                    _provider_value_counts_as_api_key(cp_id, _thread_local_env_value(cp_key_env))
+                ):
+                    cp_has_key = True
             # Fallback: check credential pool (key added via hermes auth add)
             if not cp_has_key:
                 try:
@@ -2862,15 +2902,30 @@ def get_providers() -> dict[str, Any]:
                         cp_has_key = True
                 except ImportError:
                     pass
+            cp_key_source = "none"
+            if cp_has_key:
+                cp_key_source = (
+                    "env_file" if (cp_key_env and not cp_api_key.strip()) else "config_yaml"
+                )
             providers.append({
                 "id": cp_id,
                 "display_name": cp_name,
                 "has_key": cp_has_key,
                 "configurable": False,  # custom providers managed via config.yaml
                 "is_custom": True,
-                "key_source": "config_yaml" if cp_has_key else "none",
+                "key_source": cp_key_source,
                 "models": cp_models,
                 "models_total": len(cp_models),
+                # WebUI management fields (plan custom-provider-webui §4):
+                # raw name, base URL, singular default model, discovery
+                # flags, key hint. base_url backs the card's URL row and the
+                # edit modal's prefill (it is a public URL, not a secret).
+                "name": cp_name,
+                "base_url": str(cp.get("base_url") or "").strip() or None,
+                "model": _singular_model or None,
+                "models_discovered": cp.get("models_discovered") is True,
+                "discover_models": _provider_discover_allowed(cp),
+                "key_env": cp_key_env or None,
             })
 
     # Determine active provider
@@ -3054,3 +3109,609 @@ def _clean_provider_key_from_config(provider_id: str) -> None:
             invalidate_providers_cache()
     except Exception:
         logger.exception("Failed to clean provider key from config.yaml for %s", provider_id)
+
+
+# SECTION: Custom provider management (WebUI write path — plan custom-provider-webui)
+
+_CUSTOM_NAME_MAX_CHARS = 64
+_CUSTOM_MODEL_ID_MAX_CHARS = 200
+_CUSTOM_MODELS_MAX_ENTRIES = 200
+
+
+def _custom_provider_error(code: str, detail: str) -> dict[str, Any]:
+    return {"ok": False, "error": code, "detail": detail}
+
+
+def _custom_provider_env_var_name(slug: str) -> str:
+    """Return the .env var owned by a custom provider slug (CUSTOM_<SLUG>_API_KEY)."""
+    return _api_key_env_name(slug)
+
+
+def _validate_custom_provider_name(name: object) -> str:
+    """Return "" when *name* is valid, else a human-readable detail string."""
+    clean = str(name or "").strip()
+    if not clean:
+        return "name is required"
+    if len(clean) > _CUSTOM_NAME_MAX_CHARS:
+        return f"name must be at most {_CUSTOM_NAME_MAX_CHARS} characters"
+    if ":" in clean or "\n" in clean or "\r" in clean:
+        return "name must not contain ':' or newline characters"
+    if not _custom_provider_slug_from_name(clean):
+        return "name must contain at least one letter or digit"
+    return ""
+
+
+def _validate_custom_provider_base_url(base_url: object) -> str:
+    """Return "" when *base_url* is valid, else a human-readable detail string."""
+    clean = str(base_url or "").strip()
+    if not clean:
+        return "base_url is required"
+    if any(ch.isspace() for ch in clean):
+        return "base_url must not contain whitespace"
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in clean):
+        return "base_url must not contain control characters"
+    parsed = urlparse(clean)
+    if parsed.scheme not in ("http", "https"):
+        return "base_url must start with http:// or https://"
+    if not parsed.hostname:
+        return "base_url has no host"
+    return ""
+
+
+def _validate_custom_provider_api_key(api_key: str) -> str:
+    """Return "" when *api_key* is valid, else a detail string (set_provider_key rules)."""
+    if "\n" in api_key or "\r" in api_key:
+        return "API key must not contain newline characters."
+    if len(api_key) < 8:
+        return "API key appears too short."
+    return ""
+
+
+def _validate_custom_provider_models(models: object) -> tuple[list[str] | None, str]:
+    """Return (cleaned_ids, detail). detail empty means valid; None ids = field absent.
+
+    Whitespace-only entries are dropped (the UI sends one id per textarea line);
+    non-string entries, over-long ids, and more than 200 surviving ids are rejected.
+    """
+    if models is None:
+        return None, ""
+    if not isinstance(models, list):
+        return None, "models must be a list of model ids"
+    cleaned: list[str] = []
+    for item in models:
+        if not isinstance(item, str):
+            return None, "models entries must be strings"
+        model_id = item.strip()
+        if not model_id:
+            continue
+        if len(model_id) > _CUSTOM_MODEL_ID_MAX_CHARS:
+            return None, f"model ids must be at most {_CUSTOM_MODEL_ID_MAX_CHARS} characters"
+        if model_id not in cleaned:
+            cleaned.append(model_id)
+    if len(cleaned) > _CUSTOM_MODELS_MAX_ENTRIES:
+        return None, f"models must contain at most {_CUSTOM_MODELS_MAX_ENTRIES} entries"
+    return cleaned, ""
+
+
+def _custom_provider_match_indices(entries: object, slug_key: str) -> list[int]:
+    if not isinstance(entries, list):
+        return []
+    return [
+        i
+        for i, entry in enumerate(entries)
+        if isinstance(entry, dict) and _custom_provider_slug_key(entry.get("name")) == slug_key
+    ]
+
+
+def _restore_config_file_bytes(config_path: Path, original_bytes: bytes | None) -> None:
+    """Roll config.yaml back to its pre-transaction bytes (None = file absent).
+
+    Best-effort compensation when the post-lock ``.env`` write fails after
+    config.yaml already committed: without the restore, a rename would leave
+    ``key_env`` pointing at the new owned var while the old var still holds
+    the credential, and delete's ownership check would never clean it.
+    Restore failures are logged and swallowed — the caller returns its
+    ``write_failed`` error either way.
+    """
+    try:
+        if original_bytes is None:
+            config_path.unlink(missing_ok=True)
+            return
+        import api.paths as _paths
+
+        _paths._atomic_write_text(
+            config_path, original_bytes.decode("utf-8"), encoding="utf-8"
+        )
+        import api.config as _config
+
+        # Same parse-cache eviction _save_yaml_config_file performs: a
+        # same-size restore within one coarse mtime tick must not keep
+        # serving the rolled-back parse (#4650 class).
+        with _config._yaml_file_cache_lock:
+            _config._yaml_file_cache.pop(str(config_path), None)
+    except Exception:
+        logger.exception(
+            "Failed to restore config.yaml after .env write failure (%s)", config_path
+        )
+
+
+def save_custom_provider(payload: dict[str, Any]) -> dict[str, Any]:
+    """Create or update a ``custom_providers[]`` entry from the WebUI.
+
+    Contract (plan custom-provider-webui §1): locate by ``original_name``
+    (update) or create; API keys go to ``<HERMES_HOME>/.env`` as
+    ``CUSTOM_<SLUG>_API_KEY`` with only the ``key_env`` hint in config.yaml.
+    Config writes follow the MCP §4.10 locked transaction: raw YAML read,
+    detached entry mutation, atomic write, reload after lock release.
+    """
+    if not isinstance(payload, dict):
+        return _custom_provider_error("invalid_name", "request body must be a JSON object")
+
+    name = str(payload.get("name") or "").strip()
+    detail = _validate_custom_provider_name(name)
+    if detail:
+        return _custom_provider_error("invalid_name", detail)
+
+    base_url = str(payload.get("base_url") or "").strip()
+    detail = _validate_custom_provider_base_url(base_url)
+    if detail:
+        return _custom_provider_error("invalid_base_url", detail)
+
+    # Distinguish omitted/None api_key (keep existing key) from "" (clear key).
+    api_key = ""
+    if payload.get("api_key") is not None:
+        api_key = str(payload.get("api_key")).strip()
+        if api_key:
+            detail = _validate_custom_provider_api_key(api_key)
+            if detail:
+                return _custom_provider_error("invalid_api_key", detail)
+
+    model = str(payload.get("model") or "").strip()
+
+    models_field_present = payload.get("models") is not None
+    models_clean, detail = _validate_custom_provider_models(payload.get("models"))
+    if detail:
+        return _custom_provider_error("invalid_models", detail)
+
+    discover_models = payload.get("discover_models")
+    if discover_models is not None and not isinstance(discover_models, bool):
+        return _custom_provider_error("invalid_discover_models", "discover_models must be true or false")
+
+    original_name = str(payload.get("original_name") or "").strip()
+    is_update = bool(original_name)
+    if is_update:
+        detail = _validate_custom_provider_name(original_name)
+        if detail:
+            return _custom_provider_error("invalid_name", f"original_name: {detail}")
+
+    slug = _custom_provider_slug_from_name(name)
+    new_slug_key = _custom_provider_slug_key(name)
+    env_var_name = _custom_provider_env_var_name(slug)
+    normalized_base_url = _normalize_base_url_for_match(base_url)
+
+    from api.config import _cfg_lock
+
+    import api.config as _config
+    from api import yaml_compat as _yaml
+
+    env_updates: dict[str, str | None] = {}
+    action = "updated"
+    original_config_bytes: bytes | None = None
+
+    try:
+        with _cfg_lock:
+            # Resolve both paths once, under the lock: a concurrent
+            # process-wide profile switch must not split the transaction
+            # (config → old profile, key → new profile).
+            try:
+                config_path = _config._get_config_path()
+                hermes_home = _get_hermes_home()
+            except Exception as exc:
+                logger.exception("Failed to resolve config path for custom provider save")
+                return _custom_provider_error(
+                    "write_failed", f"could not resolve config.yaml path: {exc}"
+                )
+            if config_path.exists():
+                # Pre-transaction bytes for the best-effort rollback if the
+                # post-lock .env write fails.
+                original_config_bytes = config_path.read_bytes()
+                cfg_disk = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if cfg_disk is None:
+                    cfg_disk = {}
+                if not isinstance(cfg_disk, dict):
+                    return _custom_provider_error(
+                        "write_failed", "config.yaml is not a YAML mapping"
+                    )
+            else:
+                cfg_disk = {}
+
+            # Detach the LIST container before mutation so a YAML alias of the
+            # list itself cannot leak the edit into the sibling on re-dump
+            # (ARCHITECTURE §4.10; the per-entry deepcopy below is not enough).
+            entries = cfg_disk.get("custom_providers")
+            entries = list(entries) if isinstance(entries, list) else []
+
+            if is_update:
+                target_slug_key = _custom_provider_slug_key(original_name)
+                matched = _custom_provider_match_indices(entries, target_slug_key)
+                if not matched:
+                    return _custom_provider_error(
+                        "not_found", f"no custom provider named {original_name!r}"
+                    )
+                if len(matched) > 1:
+                    return _custom_provider_error(
+                        "duplicate_name",
+                        f"multiple custom providers normalize to the same slug as "
+                        f"{original_name!r}; rename one in config.yaml",
+                    )
+                idx = matched[0]
+                for i, other in enumerate(entries):
+                    if i == idx or not isinstance(other, dict):
+                        continue
+                    if _custom_provider_slug_key(other.get("name")) == new_slug_key:
+                        return _custom_provider_error(
+                            "duplicate_name",
+                            f"another custom provider already uses the slug {slug!r}",
+                        )
+                    other_env = _custom_provider_env_var_name(
+                        _custom_provider_slug_from_name(str(other.get("name") or ""))
+                    )
+                    if other_env == env_var_name:
+                        return _custom_provider_error(
+                            "duplicate_name",
+                            f"another custom provider already owns the API key "
+                            f"variable {env_var_name}",
+                        )
+                    if _normalize_base_url_for_match(other.get("base_url")) == normalized_base_url:
+                        return _custom_provider_error(
+                            "duplicate_base_url",
+                            f"base_url is already used by custom provider "
+                            f"{str(other.get('name') or '').strip()!r}",
+                        )
+                # Detach before mutation so a YAML alias cannot leak the edit
+                # into a sibling container (ARCHITECTURE §4.10).
+                entry = copy.deepcopy(entries[idx]) if isinstance(entries[idx], dict) else {}
+                old_key_env = str(entry.get("key_env") or "").strip()
+                old_owned_env = _custom_provider_env_var_name(
+                    _custom_provider_slug_from_name(original_name)
+                )
+                entry["name"] = name
+                entry["base_url"] = base_url
+                if "model" in payload:
+                    if model:
+                        entry["model"] = model
+                    else:
+                        entry.pop("model", None)
+                if models_field_present and models_clean:
+                    entry["models"] = models_clean
+                    entry.pop("models_discovered", None)
+                if discover_models is not None:
+                    entry["discover_models"] = discover_models
+                if api_key:
+                    entry["key_env"] = env_var_name
+                    env_updates[env_var_name] = api_key
+                    if old_owned_env != env_var_name:
+                        # A rename orphaned the previously owned env var.
+                        env_updates[old_owned_env] = None
+                elif payload.get("api_key") is not None:
+                    # Explicit "" on update = clear the key. Only env vars this
+                    # feature owns (computed from old/new slug) are removed.
+                    entry.pop("key_env", None)
+                    if old_key_env in (old_owned_env, env_var_name):
+                        env_updates[old_key_env] = None
+                elif old_key_env == old_owned_env and old_owned_env != env_var_name:
+                    # api_key omitted = keep the stored key. A rename changed
+                    # the slug and the entry references the OLD owned env var:
+                    # migrate the value to the new owned name so delete's
+                    # ownership check (key_env == current-slug owned name)
+                    # still cleans it up — no orphaned credential in .env.
+                    stored_key = _load_env_file(hermes_home / ".env").get(
+                        old_owned_env, ""
+                    )
+                    if not stored_key:
+                        stored_key = _thread_local_env_value(old_owned_env).strip()
+                    if stored_key:
+                        entry["key_env"] = env_var_name
+                        env_updates[env_var_name] = stored_key
+                        env_updates[old_owned_env] = None
+                    # Unresolvable value: leave key_env untouched — never
+                    # rewrite the hint to a var we cannot back with a value.
+                entries[idx] = entry
+            else:
+                for other in entries:
+                    if not isinstance(other, dict):
+                        continue
+                    if _custom_provider_slug_key(other.get("name")) == new_slug_key:
+                        return _custom_provider_error(
+                            "duplicate_name",
+                            f"a custom provider with slug {slug!r} already exists",
+                        )
+                    other_env = _custom_provider_env_var_name(
+                        _custom_provider_slug_from_name(str(other.get("name") or ""))
+                    )
+                    if other_env == env_var_name:
+                        return _custom_provider_error(
+                            "duplicate_name",
+                            f"another custom provider already owns the API key "
+                            f"variable {env_var_name}",
+                        )
+                    if _normalize_base_url_for_match(other.get("base_url")) == normalized_base_url:
+                        return _custom_provider_error(
+                            "duplicate_base_url",
+                            f"base_url is already used by custom provider "
+                            f"{str(other.get('name') or '').strip()!r}",
+                        )
+                entry = {"name": name, "base_url": base_url}
+                if model:
+                    entry["model"] = model
+                if models_field_present and models_clean:
+                    entry["models"] = models_clean
+                if discover_models is False:
+                    entry["discover_models"] = False
+                if api_key:
+                    entry["key_env"] = env_var_name
+                    env_updates[env_var_name] = api_key
+                entries.append(entry)
+                action = "created"
+
+            cfg_disk["custom_providers"] = entries
+            _save_yaml_config_file(config_path, cfg_disk)
+    except Exception as exc:
+        logger.exception("Failed to save custom provider %s", name)
+        return _custom_provider_error("write_failed", f"failed to write config.yaml: {exc}")
+
+    if env_updates:
+        try:
+            _write_env_file(hermes_home / ".env", env_updates)
+        except Exception as exc:
+            logger.exception("Failed to write .env for custom provider %s", name)
+            _restore_config_file_bytes(config_path, original_config_bytes)
+            return _custom_provider_error("write_failed", f"failed to save API key: {exc}")
+
+    reload_config()
+    invalidate_models_cache()
+    invalidate_providers_cache()
+    return {"ok": True, "provider": {"id": slug, "name": name}, "action": action}
+
+
+def delete_custom_provider(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove a ``custom_providers[]`` entry and its owned env var (plan §2)."""
+    if not isinstance(payload, dict):
+        return _custom_provider_error("not_found", "request body must be a JSON object")
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return _custom_provider_error("not_found", "name is required")
+    slug = _custom_provider_slug_from_name(name)
+    slug_key = _custom_provider_slug_key(name)
+
+    from api.config import _cfg_lock
+
+    import api.config as _config
+    from api import yaml_compat as _yaml
+
+    env_updates: dict[str, str | None] = {}
+    original_config_bytes: bytes | None = None
+
+    try:
+        with _cfg_lock:
+            # Resolve both paths once, under the lock (same rationale as save).
+            try:
+                config_path = _config._get_config_path()
+                hermes_home = _get_hermes_home()
+            except Exception as exc:
+                logger.exception("Failed to resolve config path for custom provider delete")
+                return _custom_provider_error(
+                    "write_failed", f"could not resolve config.yaml path: {exc}"
+                )
+            if not config_path.exists():
+                return _custom_provider_error("not_found", f"no custom provider named {name!r}")
+            original_config_bytes = config_path.read_bytes()
+            cfg_disk = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if not isinstance(cfg_disk, dict):
+                return _custom_provider_error("not_found", f"no custom provider named {name!r}")
+            # Detach the LIST container before mutation (ARCHITECTURE §4.10).
+            entries = cfg_disk.get("custom_providers")
+            entries = list(entries) if isinstance(entries, list) else []
+            matched = _custom_provider_match_indices(entries, slug_key)
+            if not matched:
+                return _custom_provider_error("not_found", f"no custom provider named {name!r}")
+            if len(matched) > 1:
+                return _custom_provider_error(
+                    "not_found",
+                    "multiple custom providers normalize to the same slug; "
+                    "remove one manually in config.yaml",
+                )
+            entry = entries[matched[0]]
+            key_env = str(entry.get("key_env") or "").strip() if isinstance(entry, dict) else ""
+            del entries[matched[0]]
+            cfg_disk["custom_providers"] = entries
+            # Only remove the env var this feature owns (computed name AND the
+            # entry actually references it); user-authored keys are untouched.
+            owned_env = _custom_provider_env_var_name(slug)
+            if key_env and key_env == owned_env:
+                env_updates[owned_env] = None
+            _save_yaml_config_file(config_path, cfg_disk)
+    except Exception as exc:
+        logger.exception("Failed to delete custom provider %s", name)
+        return _custom_provider_error("write_failed", f"failed to write config.yaml: {exc}")
+
+    if env_updates:
+        try:
+            _write_env_file(hermes_home / ".env", env_updates)
+        except Exception as exc:
+            logger.exception("Failed to clean .env for custom provider %s", name)
+            _restore_config_file_bytes(config_path, original_config_bytes)
+            return _custom_provider_error("write_failed", f"failed to remove API key: {exc}")
+
+    reload_config()
+    invalidate_models_cache()
+    invalidate_providers_cache()
+    return {"ok": True, "provider": {"id": slug}, "action": "deleted"}
+
+
+def _probe_custom_provider_models(base_url: str, api_key: str | None) -> dict[str, Any]:
+    """Probe ``<base>/v1/models`` via the onboarding probe machinery (no fork).
+
+    ``probe_provider_endpoint`` appends ``/models`` to its base, so the base is
+    pre-normalized with the ``_models_endpoint_for_base_url`` rule (base ending
+    in ``/v1`` stays as-is, anything else gets ``/v1`` appended).
+    """
+    from api.config import CUSTOM_MODELS_ENDPOINT_TIMEOUT_SECONDS
+    from api.onboarding import probe_provider_endpoint
+
+    probe_base = str(base_url or "").strip().rstrip("/")
+    if not probe_base.endswith("/v1"):
+        probe_base = probe_base + "/v1"
+    probe = probe_provider_endpoint(
+        "custom",
+        probe_base,
+        api_key=api_key or None,
+        timeout=CUSTOM_MODELS_ENDPOINT_TIMEOUT_SECONDS,
+    )
+    if not probe.get("ok"):
+        error = str(probe.get("error") or "unreachable")
+        if error == "http_4xx" and probe.get("status") in (401, 403):
+            error = "auth"
+        elif error not in ("timeout", "http_4xx", "http_5xx", "parse"):
+            error = "unreachable"
+        return {"ok": False, "error": error, "detail": str(probe.get("detail") or "")}
+    models = [
+        {"id": str(m.get("id"))}
+        for m in probe.get("models") or []
+        if isinstance(m, dict) and str(m.get("id") or "").strip()
+    ]
+    return {"ok": True, "models": models, "count": len(models)}
+
+
+def _persist_discovered_custom_provider_models(slug_key: str, model_ids: list[str]) -> bool:
+    """Write ``models`` + ``models_discovered: true`` to the entry; False when absent/ambiguous."""
+    from api.config import _cfg_lock
+
+    import api.config as _config
+    from api import yaml_compat as _yaml
+
+    try:
+        with _cfg_lock:
+            config_path = _config._get_config_path()
+            if not config_path.exists():
+                return False
+            cfg_disk = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if not isinstance(cfg_disk, dict):
+                return False
+            # Detach the LIST container before mutation (ARCHITECTURE §4.10).
+            entries = cfg_disk.get("custom_providers")
+            entries = list(entries) if isinstance(entries, list) else []
+            matched = _custom_provider_match_indices(entries, slug_key)
+            if len(matched) != 1:
+                return False
+            entry = copy.deepcopy(entries[matched[0]])
+            entry["models"] = list(model_ids)
+            entry["models_discovered"] = True
+            entries[matched[0]] = entry
+            cfg_disk["custom_providers"] = entries
+            _save_yaml_config_file(config_path, cfg_disk)
+        return True
+    except Exception:
+        logger.exception("Failed to persist discovered models for %s", slug_key)
+        return False
+
+
+def refresh_custom_provider_models(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fetch a custom provider's remote model list, optionally persisting (plan §3).
+
+    Named mode ``{"name": ...}`` probes the entry's base_url with its resolved
+    key and persists ``models`` + ``models_discovered: true`` on success; a
+    failed probe leaves the stored config untouched. Ad-hoc mode
+    ``{"base_url": ..., "api_key": ...}`` probes without persisting.
+    """
+    if not isinstance(payload, dict):
+        return _custom_provider_error("invalid_request", "request body must be a JSON object")
+    name = str(payload.get("name") or "").strip()
+    raw_base_url = str(payload.get("base_url") or "").strip()
+
+    if not name and not raw_base_url:
+        return _custom_provider_error("invalid_request", "name or base_url is required")
+
+    if name:
+        return _refresh_named_custom_provider_models(name)
+
+    detail = _validate_custom_provider_base_url(raw_base_url)
+    if detail:
+        return _custom_provider_error("invalid_base_url", detail)
+    api_key = ""
+    if payload.get("api_key") is not None:
+        api_key = str(payload.get("api_key")).strip()
+        if api_key:
+            detail = _validate_custom_provider_api_key(api_key)
+            if detail:
+                return _custom_provider_error("invalid_api_key", detail)
+    probe_result = _probe_custom_provider_models(raw_base_url, api_key or None)
+    if not probe_result.get("ok"):
+        return probe_result
+    return {
+        "ok": True,
+        "models": probe_result["models"],
+        "count": probe_result["count"],
+        "persisted": False,
+    }
+
+
+def _refresh_named_custom_provider_models(name: str) -> dict[str, Any]:
+    from api.config import _cfg_lock
+
+    import api.config as _config
+    from api import yaml_compat as _yaml
+
+    slug_key = _custom_provider_slug_key(name)
+    slug = _custom_provider_slug_from_name(name)
+
+    # Snapshot the entry under the lock; the network probe runs OUTSIDE it.
+    try:
+        with _cfg_lock:
+            config_path = _config._get_config_path()
+            if not config_path.exists():
+                return _custom_provider_error("not_found", f"no custom provider named {name!r}")
+            cfg_disk = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            entries = cfg_disk.get("custom_providers") if isinstance(cfg_disk, dict) else None
+            matched = _custom_provider_match_indices(entries, slug_key)
+            if not matched:
+                return _custom_provider_error("not_found", f"no custom provider named {name!r}")
+            if len(matched) > 1:
+                return _custom_provider_error(
+                    "not_found",
+                    "multiple custom providers normalize to the same slug; "
+                    "rename one in config.yaml",
+                )
+            entry = copy.deepcopy(entries[matched[0]])
+    except Exception as exc:
+        logger.exception("Failed to read custom provider %s for model refresh", name)
+        return _custom_provider_error("write_failed", f"failed to read config.yaml: {exc}")
+
+    base_url = str(entry.get("base_url") or "").strip()
+    if not base_url:
+        return _custom_provider_error("not_found", f"custom provider {name!r} has no base_url")
+    api_key = _resolve_custom_record_key(entry.get("api_key"), entry.get("key_env"), slug)
+    if not api_key:
+        # _resolve_custom_record_key reads os.environ only; when the key was
+        # written to .env by another process (hermes CLI), fall back to the
+        # file-aware providers.py resolution.
+        api_key = _get_provider_api_key(slug)
+
+    probe_result = _probe_custom_provider_models(base_url, api_key)
+    if not probe_result.get("ok"):
+        # Contract: probe failure returns ok:false over HTTP 200 and MUST NOT
+        # clobber the stored config.
+        return probe_result
+
+    model_ids = [m["id"] for m in probe_result["models"]]
+    persisted = _persist_discovered_custom_provider_models(slug_key, model_ids)
+    if persisted:
+        reload_config()
+        invalidate_models_cache()
+        invalidate_providers_cache()
+    return {
+        "ok": True,
+        "models": probe_result["models"],
+        "count": probe_result["count"],
+        "persisted": persisted,
+    }

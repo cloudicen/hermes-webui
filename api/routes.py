@@ -12244,6 +12244,9 @@ from api.providers import (
     provider_has_process_wakeup_recovery_credential,
     set_provider_key,
     remove_provider_key,
+    save_custom_provider,
+    delete_custom_provider,
+    refresh_custom_provider_models,
 )
 from api.onboarding import (
     apply_onboarding_setup,
@@ -17743,6 +17746,43 @@ def handle_post(handler, parsed) -> bool:
             return j(handler, apply_self_hosted_provider_setup(body))
         except ValueError as exc:
             return bad(handler, str(exc), 400)
+
+    if parsed.path == "/api/providers/custom":
+        result = save_custom_provider(body)
+        if not result.get("ok"):
+            return j(
+                handler,
+                {"error": result.get("error", "error"), "detail": result.get("detail", "")},
+                status=400,
+            )
+        return j(handler, result)
+
+    if parsed.path == "/api/providers/custom/delete":
+        result = delete_custom_provider(body)
+        if not result.get("ok"):
+            return j(
+                handler,
+                {"error": result.get("error", "error"), "detail": result.get("detail", "")},
+                status=400,
+            )
+        return j(handler, result)
+
+    if parsed.path == "/api/providers/custom/models":
+        result = refresh_custom_provider_models(body)
+        # Request-shape errors are 400s; probe failures stay HTTP 200 with
+        # ok:false so the UI can render the failure mode inline.
+        if not result.get("ok") and result.get("error") in (
+            "not_found",
+            "invalid_base_url",
+            "invalid_api_key",
+            "invalid_request",
+        ):
+            return j(
+                handler,
+                {"error": result.get("error", "error"), "detail": result.get("detail", "")},
+                status=400,
+            )
+        return j(handler, result)
 
     if parsed.path == "/api/models/refresh":
         provider_id = (body.get("provider") or "").strip().lower()
