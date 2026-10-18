@@ -56,7 +56,8 @@
 - 基线事实（建立 fork-point tag 时记录）：
   - fork-point tag: `fork-point-2026-10-15`（annotated tag，peel 到提交 sha
     fd681377310b4590acfd7b69d255b3e75f6e47bb，即本线与 upstream/master 的 merge-base）
-  - 自有提交数（fork-point..master）: 25
+  - 自有提交数（fork-point..master，本 entry 落笔时点）: 31
+    （fork-point 基线建立时 T1 实测 25；差额 6 为 T1 测量后落地的本机制自身提交）
   - 上游领先数（master..upstream/master）: 421（与基线 digest 头部计数一致）
 - 声明: 本仓库自此以独立线开始，**尚未同步任何上游内容**；此后每一次同步动作
   按 [UPSTREAM-SYNC.md](UPSTREAM-SYNC.md) 执行并在本文件递增一条 entry。
